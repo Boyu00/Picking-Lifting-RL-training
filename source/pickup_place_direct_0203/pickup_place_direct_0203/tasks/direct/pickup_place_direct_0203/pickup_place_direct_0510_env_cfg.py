@@ -21,8 +21,31 @@ from isaaclab.markers.config import FRAME_MARKER_CFG
 from .jetrover import JETROVER_CFG
 
 # ObjectFolder 物體ID列表 # [39, 41]
-# SELECTED_OBJECT_IDS = [22, 25, 26, 27, 31, 39, 41, 62, 68, 70, 93, 95, 96, 21] # 21 bottle 29 wood 40 28
-SELECTED_OBJECT_IDS = [25,95,68,22,39]
+# SELECTED_OBJECT_IDS = [22, 25, 26, 27, 31, 39, 40, 41, 62, 68, 70, 93, 95, 96, 21] # 21 bottle 29 wood 40 28
+SELECTED_OBJECT_IDS = [22, 25, 26, 27, 28, 31, 39, 40, 41, 62, 68, 70, 93, 95, 96]
+
+# 各物體摩擦係數範圍 (static_min, static_max, dynamic_min, dynamic_max)
+# 數值基於物體材質的真實物理特性
+OBJECT_FRICTION_MAP = {
+    # 原有 5 種
+    39: (0.5, 0.8, 0.4, 0.6),  # 塑膠小杯子
+    22: (0.4, 0.7, 0.3, 0.5),  # 塑膠盆子 (PP/PE)
+    95: (0.7, 0.9, 0.5, 0.7),  # 玻璃瓶
+    68: (0.5, 0.8, 0.4, 0.6),  # 塑膠罐
+    25: (0.5, 0.7, 0.4, 0.6),  # 不鏽鋼叉子
+
+    # 新增 10 種
+    26: (0.5, 0.7, 0.4, 0.6),  # 不鏽鋼湯匙
+    27: (0.5, 0.7, 0.4, 0.6),  # 不鏽鋼刀子
+    28: (0.5, 0.7, 0.4, 0.6),  # 鐵叉子
+    31: (0.4, 0.6, 0.3, 0.5),  # 麥克筆（塑膠外殼）
+    40: (0.5, 0.8, 0.4, 0.6),  # 塑膠小杯子（同 39）
+    41: (0.5, 0.8, 0.4, 0.6),  # 塑膠小杯子（同 39）
+    62: (0.6, 0.8, 0.4, 0.6),  # 陶瓷盤子
+    70: (0.5, 0.8, 0.4, 0.6),  # 塑膠玩具
+    93: (0.5, 0.8, 0.4, 0.6),  # 塑膠瓶
+    96: (0.7, 0.9, 0.5, 0.7),  # 玻璃調味罐（同 95）
+}
 # Create a smaller frame marker for better visualization (ISSUE FIX #4)
 FRAME_MARKER_SMALL_CFG = FRAME_MARKER_CFG.copy()
 FRAME_MARKER_SMALL_CFG.markers["frame"].scale = (0.05, 0.05, 0.05)
@@ -34,7 +57,7 @@ class PickupPlaceDirect0510EnvCfg(DirectRLEnvCfg):
 
     # 環境基本設定
     decimation = 10
-    episode_length_s = 5.0
+    episode_length_s = 10.0
     
     # Debug visualization settings
     # Debug visualization settings
@@ -71,15 +94,11 @@ class PickupPlaceDirect0510EnvCfg(DirectRLEnvCfg):
     
     # LIFTING DETECTION FIX: Anti-penetration physics parameters
     # Prevent objects from penetrating gripper deeply
-    sim.physx.contact_offset = 0.005        # 5mm detection buffer before actual geometric contact
+
     sim.physx.rest_offset = 0.0001          # Small rest offset to maintain stable contact
     sim.physx.min_position_iteration_count = 32  # COMPROMISE: 12 is very stable but 2.5x faster than 32
     sim.physx.min_velocity_iteration_count = 4   # Sufficient for stability
     
-
-    # [SOLVER ORDER] Solve articulation contacts last for better grasping stability
-    # Prevents joint driving forces from pushing objects through fixed contact points
-    sim.physx.solve_articulation_contact_last = True
 
     # robot
     robot_cfg: ArticulationCfg = JETROVER_CFG.replace(prim_path="/World/envs/env_.*/Robot")
@@ -182,13 +201,20 @@ class PickupPlaceDirect0510EnvCfg(DirectRLEnvCfg):
     # Arm Initial Position Randomization Settings
     # Randomize arm joint offsets at episode reset to vary the viewing angle
     # while ensuring the camera can view the object near the center of the frame
-    randomize_arm_init = False
+    randomize_arm_init = True
+    # arm_init_offset_range = {
+    #     "joint1": (-0.3, 0.3),      # Base rotation (yaw)
+    #     "joint2": (0.3, 1.0),       # Shoulder (pitch)
+    #     "joint3": (0.4, 1.2),       # Elbow (pitch) 
+    #     "joint4": (0.5, 1.3),       # Wrist (pitch)
+    #     "joint5": (-0.5, 0.5),      # Wrist (roll)
+    # }
     arm_init_offset_range = {
-        "joint1": (-0.3, 0.3),      # Base rotation (yaw)
-        "joint2": (0.3, 1.0),       # Shoulder (pitch)
-        "joint3": (0.4, 1.2),       # Elbow (pitch) 
-        "joint4": (0.5, 1.3),       # Wrist (pitch)
-        "joint5": (-0.5, 0.5),      # Wrist (roll)
+        "joint1": (0.0, 0.0),                           # Base rotation (yaw)
+        "joint2": (-30 * math.pi/180, -30 * math.pi/180), # Shoulder (pitch) -30 deg
+        "joint3": (45 * math.pi/180, 45 * math.pi/180),  # Elbow (pitch) 60 deg
+        "joint4": (119 * math.pi/180, 119 * math.pi/180), # Wrist (pitch) 119 deg
+        "joint5": (0.0, 0.0),                           # Wrist (roll)
     }
 
     # Object Spawn Settings - Randomization
@@ -198,7 +224,7 @@ class PickupPlaceDirect0510EnvCfg(DirectRLEnvCfg):
 
     # Success Criteria
     success_criteria = {
-        "consecutive_success_threshold": 50,
+        "consecutive_success_threshold": 10,
         "initial_ignore_steps": 0,
         "min_height": 0.06,
         "min_grasp_quality": 0.20,
@@ -209,13 +235,13 @@ class PickupPlaceDirect0510EnvCfg(DirectRLEnvCfg):
 
     # Reward Settings
     reward_settings = {
-        "reaching_std": 0.07,
-        "lifting_min_height": 0.5,
+        "reaching_std": 0.15,
+        "lifting_min_height": 0.30,
         "close_threshold": 0.08,
-        "goal_std": 0.15,
-        "goal_min_height": 0.20,
-        "goal_fine_std": 0.05,
-        "goal_fine_min_height": 0.20,
+        "goal_std": 0.4,
+        "goal_min_height": 0.10,
+        "goal_fine_std": 0.15,
+        "goal_fine_min_height": 0.10,
         "object_is_reached_threshold": 0.08,
     }
 
@@ -240,18 +266,18 @@ class PickupPlaceDirect0510EnvCfg(DirectRLEnvCfg):
             "dependency": None
         },
         "object_goal_tracking": {
-            "target": 8.0, #0.1, #8.0
+            "target": 4.0, #0.1, #8.0
             "threshold": 0.5, #0.6,#0.4, 
-            "metric": "episode_lifting_success", #"reaching_success", #"episode_lifting_success", 
+            "metric": "lifting_success", 
             "dependency": "lifting_object",#None#"lifting_object",
-            "increment": 0.05,  # Gradual warm-up
+            "increment": 0.25,  # Gradual warm-up
             "interval": 50,    # Check success every 25 steps (fast check)
             "increment_interval": 100, # But only increase weight every 100 steps (slow warm-up)
         },
         "object_goal_tracking_fine_grained": {
-            "target": 2.0, #0.2, #2.0
+            "target": 1.0, #0.2, #2.0
             "threshold": 0.5, 
-            "metric": "episode_lifting_success", 
+            "metric": "lifting_success", 
             "dependency": "lifting_object",
             "increment": 0.025, 
             "interval": 50,
@@ -263,13 +289,13 @@ class PickupPlaceDirect0510EnvCfg(DirectRLEnvCfg):
 
     # Manual Curriculum Weight Initialization (for resuming training)
     # If a term is present here, it will initialize with this value instead of 0.0
-    # 從頭訓練：全部從 0 開始，讓 curriculum 門檻自動解鎖
+    # 直接從 reaching > 60% 解鎖的階段開始訓練 (跳過純 reaching 階段)
     curriculum_starting_weights = {
-        # "lifting_object": 3.0,
-        # "lifting_object_velocity": 0.8,
-        # "close_reward": 0.3,
-        # "object_goal_tracking": 7.0,
-        # "object_goal_tracking_fine_grained": 2.0,
+        "lifting_object": 3.0,
+        "lifting_object_velocity": 0.8,
+        "close_reward": 0.3,
+        "object_goal_tracking": 4.0,
+        "object_goal_tracking_fine_grained": 1.0
     }
 
     # Object Configuration

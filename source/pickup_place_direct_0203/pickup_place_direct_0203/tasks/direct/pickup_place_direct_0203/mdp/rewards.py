@@ -43,7 +43,7 @@ def object_is_lifted(
     lift_height = object_bottom_z - floor_height
     lifting_reward = lift_height / (minimal_height + 1e-6)
     lifting_reward = torch.clamp(lifting_reward, min=0.0, max=1.0)
-    is_settled = env.episode_length_buf > 15
+    is_settled = env.episode_length_buf > 3
 
     # 接觸 gating：兩個夾爪都要有真實接觸
     left_sensor = env.scene[left_contact_cfg.name]
@@ -223,7 +223,7 @@ def object_goal_is_tracked(
     is_close = (distance < threshold)
     object_bottom_z = _get_object_bottom_z(env, object_cfg)
     is_high_enough = (object_bottom_z > minimal_height)
-    is_settled = env.episode_length_buf > 15
+    is_settled = env.episode_length_buf > 3
     return (is_close & is_high_enough & is_settled).float()
 
 
@@ -282,7 +282,7 @@ def check_lifting_success(
 ) -> torch.Tensor:
     object_bottom_z = _get_object_bottom_z(env, object_cfg)
     lift_height = object_bottom_z - floor_height
-    is_success = ((lift_height > threshold) & (env.episode_length_buf > 15)).float()
+    is_success = ((lift_height > threshold) & (env.episode_length_buf > 3)).float()
     return is_success
 
 

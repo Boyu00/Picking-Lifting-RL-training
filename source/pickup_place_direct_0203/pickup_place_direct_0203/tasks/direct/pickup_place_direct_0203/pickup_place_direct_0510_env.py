@@ -33,7 +33,7 @@ from isaaclab.utils.math import quat_apply, subtract_frame_transforms
 from isaaclab.controllers import DifferentialIKController
 from isaaclab.controllers.differential_ik_cfg import DifferentialIKControllerCfg
 
-from .pickup_place_direct_0510_env_cfg import PickupPlaceDirect0510EnvCfg, SELECTED_OBJECT_IDS
+from .pickup_place_direct_0510_env_cfg import PickupPlaceDirect0510EnvCfg, SELECTED_OBJECT_IDS, OBJECT_FRICTION_MAP
 from .mdp import observations as mdp_obs
 from .mdp import rewards as mdp_rewards
 from .mdp import terminations as mdp_term
@@ -149,6 +149,9 @@ class PickupPlaceDirect0510Env(DirectRLEnv):
         
         # Initialize random seeds for arm initial positions
         self._init_arm_randomization()
+
+        # Setup gripper friction (one-time) and prepare friction API cache
+        self._setup_friction_materials()
 
     def _setup_scene(self):
         # Add robot
@@ -763,6 +766,10 @@ class PickupPlaceDirect0510Env(DirectRLEnv):
         self.extras["episode"]["object_goal_tracking_success"] = torch.mean(is_tracked.float())
         self.extras["episode"]["episode_lifting_success"] = self.current_rolling_success
         
+        # Calculate and monitor the mean lift height of the object across all envs
+        object_bottom_z = mdp_rewards._get_object_bottom_z(self, SceneEntityCfg("object"))
+        self.extras["episode"]["mean_lift_height"] = torch.mean(object_bottom_z).item()
+        
         # (Legacy per-step logging removed in favor of accumulated sums in _reset_idx)
         # # Store individual reward term averages for TensorBoard (ISSUE FIX #2, #6)
         # # Only log curriculum-weighted rewards when their weight > 0 (active in current curriculum phase)
@@ -815,7 +822,7 @@ class PickupPlaceDirect0510Env(DirectRLEnv):
                     "reaching_success", "lifting_success", "object_goal_tracking_success",
                     "reward_reaching", "reward_lifting", "reward_lifting_vel", 
                     "reward_close", "reward_goal", "reward_goal_fine",
-                    "reward_action_rate", "reward_joint_vel"
+                    "reward_action_rate", "reward_joint_vel", "mean_lift_height"
                 ]:
                     extras["log"]["episode"][key] = value
         
@@ -1169,8 +1176,95 @@ class PickupPlaceDirect0510Env(DirectRLEnv):
                 
                 physx_view.set_inertias(new_inertias, env_ids)
 
+            # Randomize object friction based on the active object type
+            self._randomize_object_friction(env_ids)
+
         except Exception:
             pass
+
+    def _setup_friction_materials(self):
+        """One-time setup: set gripper fingertip friction to 1.2 for all environments."""
+        try:
+            import isaaclab.sim as sim_utils_local
+            from pxr import UsdShade, UsdPhysics, PhysxSchema, Gf
+
+            stage = sim_utils_local.get_current_stage()
+            gripper_links = ["l_out_link", "r_out_link"]
+
+            for env_id in range(self.num_envs):
+                for link_name in gripper_links:
+                    # Walk the prim and its children to find/create a physics material
+                    prim_path = f"/World/envs/env_{env_id}/Robot/{link_name}"
+                    prim = stage.GetPrimAtPath(prim_path)
+                    if not prim.IsValid():
+                        continue
+
+                    # Find existing material binding or create new one
+                    mat_path = f"{prim_path}/GripperMaterial"
+                    if not stage.GetPrimAtPath(mat_path).IsValid():
+                        # Create a new physics material
+                        mat_prim = stage.DefinePrim(mat_path, "Material")
+                    else:
+                        mat_prim = stage.GetPrimAtPath(mat_path)
+
+                    # Apply UsdPhysics.Material schema
+                    phys_mat = UsdPhysics.Material.Apply(mat_prim)
+                    phys_mat.GetStaticFrictionAttr().Set(1.2)
+                    phys_mat.GetDynamicFrictionAttr().Set(1.0)
+                    phys_mat.GetRestitutionAttr().Set(0.0)
+
+                    # Bind the material to the collision prim
+                    # Isaac Sim looks for physics material on the prim or its children
+                    binding_api = UsdShade.MaterialBindingAPI.Apply(prim)
+                    material = UsdShade.Material(mat_prim)
+                    binding_api.Bind(material, UsdShade.Tokens.weakerThanDescendants, "physics")
+
+            print(f"[INFO] Gripper friction set to 1.2 for {self.num_envs} environments.")
+        except Exception as e:
+            print(f"[WARN] Could not set gripper friction: {e}")
+
+    def _randomize_object_friction(self, env_ids: torch.Tensor):
+        """Randomize object friction per-reset based on the active object's material properties."""
+        try:
+            import isaaclab.sim as sim_utils_local
+            from pxr import UsdShade, UsdPhysics
+
+            stage = sim_utils_local.get_current_stage()
+
+            # Determine active object ID (same for all envs in a run due to MultiAssetSpawner cloning)
+            active_id = self.object_id_buf[0].item() if hasattr(self, 'object_id_buf') else -1
+            friction_range = OBJECT_FRICTION_MAP.get(int(active_id), (0.5, 0.7, 0.4, 0.6))
+            s_min, s_max, d_min, d_max = friction_range
+
+            env_ids_list = env_ids.cpu().tolist()
+            for env_id in env_ids_list:
+                prim_path = f"/World/envs/env_{env_id}/Object"
+                prim = stage.GetPrimAtPath(prim_path)
+                if not prim.IsValid():
+                    continue
+
+                mat_path = f"{prim_path}/ObjectMaterial"
+                if not stage.GetPrimAtPath(mat_path).IsValid():
+                    stage.DefinePrim(mat_path, "Material")
+                mat_prim = stage.GetPrimAtPath(mat_path)
+
+                # Sample random friction values within the range
+                static_friction = s_min + random.random() * (s_max - s_min)
+                dynamic_friction = d_min + random.random() * (d_max - d_min)
+                # 確保動摩擦力不超過靜摩擦力，符合物理真實性 (Dynamic Friction <= Static Friction)
+                dynamic_friction = min(dynamic_friction, static_friction)
+
+                phys_mat = UsdPhysics.Material.Apply(mat_prim)
+                phys_mat.GetStaticFrictionAttr().Set(float(static_friction))
+                phys_mat.GetDynamicFrictionAttr().Set(float(dynamic_friction))
+                phys_mat.GetRestitutionAttr().Set(0.0)
+
+                binding_api = UsdShade.MaterialBindingAPI.Apply(prim)
+                material = UsdShade.Material(mat_prim)
+                binding_api.Bind(material, UsdShade.Tokens.weakerThanDescendants, "physics")
+
+        except Exception as e:
+            print(f"[WARN] Could not randomize object friction: {e}")
 
     def _detect_object_id(self):
         """Detect the active object ID by inspecting the USD stage.
