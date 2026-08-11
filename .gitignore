@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.bak
+
+# Training / evaluation outputs
+logs/
+outputs/
+wandb/
+runs/
+eval_results*/
+eval_vision_debug/
+debug_vision/
+debug_snapshots/
+autopsy_gallery/
+vision_frame*/
+v6_latest_audit/
+scratch/
+
+# Logs & crash dumps
+*.log
+core
+nohup.out
+*.err
+*.out
+
+# Model weights & datasets
+weights/
+*.pt
+*.pth
+*.ts
+*.hdf5
+*.npy
+*.ply
