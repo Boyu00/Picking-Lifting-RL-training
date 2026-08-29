@@ -70,11 +70,14 @@ class PickupPlaceLatchedObsEnvCfg(PickupPlaceDirect0510EnvCfg):
         "gripper_scale": 1.0,
     }
 
-    # ===== 獎勵尺度設定 (Round 2: 啟用保守的地面防推懲罰) =====
+    # ===== 獎勵尺度設定 (Round 3: 實體夾持感知 + 深度包覆引導 + 連續抬起) =====
     rew_scale_hover = 0.0              # 關閉
-    rew_scale_displacement = -1.0       # Round 2: 啟用保守防推懲罰 (-1.0)
+    rew_scale_displacement = -1.0       # Round 2 保守防推懲罰 (-1.0)
     rew_scale_reach = 1.0              # 對齊 Franka
-    rew_scale_lift = 5.0               # 對齊 Franka (已調降防鎖死版本)
+    rew_scale_enclosure = 1.0          # Round 3: 張開夾爪深度包覆獎勵 (+1.0)
+    rew_scale_grasp = 3.0              # Round 3: 實體夾持感知 (Joint Jamming) 獎勵 (+3.0)
+    rew_scale_premature_close = -0.2   # Round 3: 遠距離提早閉爪微懲罰 (-0.2)
+    rew_scale_lift = 5.0               # 對齊 Franka (已升級為連續漸進抬起)
     rew_scale_goal = 16.0              # 對齊 Franka
     rew_scale_goal_fine = 5.0          # 對齊 Franka
     rew_scale_action = -1e-4           # 對齊 Franka
