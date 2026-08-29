@@ -186,8 +186,9 @@ class PickupPlaceLatchedObsEnv(PickupPlaceDirect0510Env):
         # 5. Actions L2 rate penalty (作用在未裁剪的 actions 上以拉回 Actor 均值)
         rewards_dict["action_rate"] = torch.sum(torch.square(self.actions), dim=1)
 
-        # 6. Joint velocity penalty
-        rewards_dict["joint_vel"] = torch.sum(torch.square(self.robot.data.joint_vel), dim=1)
+        # 6. Joint velocity penalty (僅計算 5 軸手臂 + 1 軸夾爪，排除底盤 4 輪與未受控關節之高頻微震)
+        controlled_joint_ids = list(self._arm_joint_indices) + list(self._gripper_joint_idx)
+        rewards_dict["joint_vel"] = torch.sum(torch.square(self.robot.data.joint_vel[:, controlled_joint_ids]), dim=1)
 
         # ===== 課程權重讀取 (已按要求改為註解/禁用以防止死鎖，改為直接使用 config 固定權重) =====
         # w_lift = self._curriculum_term_weights.get("lifting_object", self.cfg.rew_scale_lift)
