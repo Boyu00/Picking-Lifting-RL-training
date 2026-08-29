@@ -351,9 +351,14 @@ class PickupPlaceLatchedObsEnv(PickupPlaceDirect0510Env):
             arm_joint_pos
         )
         
-        # 4. 二進位夾爪控制 (使用 clipped 動作值)
+        # 4. 二進位夾爪控制 (對齊 Franka 語意：action > 0 為張開，action <= 0 為閉合)
+        #    JetRover 物理定義：1.57 rad = 全開 (Open)，0.0 rad = 全閉 (Close)
         gripper_action = self.clipped_actions[:, 6]
-        gripper_target = torch.where(gripper_action > 0.0, torch.zeros_like(gripper_action), torch.full_like(gripper_action, 1.57))
+        gripper_target = torch.where(
+            gripper_action > 0.0,
+            torch.full_like(gripper_action, 1.57),  # > 0 -> Open (1.57 rad)
+            torch.zeros_like(gripper_action)        # <= 0 -> Close (0.0 rad)
+        )
         
         # 5. 限制關節極值並輸出
         joint_pos_desired = torch.clamp(joint_pos_desired, -2.09, 2.09)
