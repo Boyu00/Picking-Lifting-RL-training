@@ -114,3 +114,29 @@ gym.register(
         "skrl_cfg_entry_point": f"{agents.__name__}:skrl_ppo_cfg.yaml",
     },
 )
+
+# Latched Observation + IK (方案 A 驗證)
+gym.register(
+    id="Template-Pickup-Place-Latched-Obs-v0",
+    entry_point=f"{__name__}.pickup_place_latched_obs_env:PickupPlaceLatchedObsEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.pickup_place_latched_obs_env_cfg:PickupPlaceLatchedObsEnvCfg",
+        "rl_games_cfg_entry_point": f"{agents.__name__}:rl_games_ppo_cfg.yaml",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_latched_cfg:PPORunnerCfg",
+        "skrl_cfg_entry_point": f"{agents.__name__}:skrl_ppo_cfg.yaml",
+    },
+)
+
+# Official Franka Cube Lift with Latched Obs (Direct Workflow)
+gym.register(
+    id="Template-Franka-Cube-Lift-Latched-Obs-v0",
+    entry_point=f"{__name__}.franka_cube_lift_direct_env:FrankaCubeLiftDirectEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.franka_cube_lift_direct_env_cfg:FrankaCubeLiftDirectEnvCfg",
+        "rl_games_cfg_entry_point": f"{agents.__name__}:rl_games_ppo_cfg.yaml",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_franka_cfg:PPORunnerCfg",
+        "skrl_cfg_entry_point": f"{agents.__name__}:skrl_ppo_cfg.yaml",
+    },
+)
