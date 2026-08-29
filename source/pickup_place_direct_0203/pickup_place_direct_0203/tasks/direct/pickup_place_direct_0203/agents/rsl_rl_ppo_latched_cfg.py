@@ -24,9 +24,9 @@ class PPORunnerCfg(RslRlOnPolicyRunnerCfg):
     clip_actions = 100.0
     clip_observations = 100.0
 
-    # ===== 網絡架構 (Round 1: 降低初始噪聲以提升穩定性) =====
+    # ===== 網絡架構 (Round 2: 適度維持初始探索空間，避免夾爪開閉過早凍結) =====
     policy = RslRlPpoActorCriticCfg(
-        init_noise_std=0.5,                  # Round 1: 從 1.0 降至 0.5，避免前期巨大隨機跳動
+        init_noise_std=0.8,                  # Round 2: 設為 0.8，確保夾爪有充足機率探索開爪 (>0) 與閉爪 (<=0)
         actor_obs_normalization=True,
         critic_obs_normalization=True,
         actor_hidden_dims=[256, 128, 64],   # 與 0510 相同
@@ -34,16 +34,16 @@ class PPORunnerCfg(RslRlOnPolicyRunnerCfg):
         activation="elu",
     )
 
-    # ===== PPO 演算法參數 (Round 1: 固定 LR + 降低 Entropy 防止發散) =====
+    # ===== PPO 演算法參數 (Round 2: 固定 LR + 適度 Entropy 保證探索) =====
     algorithm = RslRlPpoAlgorithmCfg(
         value_loss_coef=1.0,
         use_clipped_value_loss=True,
         clip_param=0.2,
-        entropy_coef=0.001,                 # Round 1: 從 0.003 降至 0.001，抑制噪聲膨脹
+        entropy_coef=0.002,                 # Round 2: 設為 0.002，防止噪聲過快衰減至 0.1 以下
         num_learning_epochs=8,
         num_mini_batches=4,
-        learning_rate=3.0e-4,               # Round 1: 設為穩健的 3e-4 固定學習率
-        schedule="fixed",                   # Round 1: 關閉 adaptive，防止 LR 暴衝至 0.01
+        learning_rate=3.0e-4,               # Round 2: 保持 3e-4 固定學習率
+        schedule="fixed",                   # Round 2: 固定 schedule
         gamma=0.99,
         lam=0.95,
         desired_kl=0.01,

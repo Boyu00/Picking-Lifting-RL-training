@@ -70,9 +70,9 @@ class PickupPlaceLatchedObsEnvCfg(PickupPlaceDirect0510EnvCfg):
         "gripper_scale": 1.0,
     }
 
-    # ===== 獎勵尺度設定 (對齊 Franka 密集獎勵，完全註解/關閉原本課程與額外獎勵) =====
+    # ===== 獎勵尺度設定 (Round 2: 啟用保守的地面防推懲罰) =====
     rew_scale_hover = 0.0              # 關閉
-    rew_scale_displacement = 0.0       # 關閉
+    rew_scale_displacement = -1.0       # Round 2: 啟用保守防推懲罰 (-1.0)
     rew_scale_reach = 1.0              # 對齊 Franka
     rew_scale_lift = 5.0               # 對齊 Franka (已調降防鎖死版本)
     rew_scale_goal = 16.0              # 對齊 Franka

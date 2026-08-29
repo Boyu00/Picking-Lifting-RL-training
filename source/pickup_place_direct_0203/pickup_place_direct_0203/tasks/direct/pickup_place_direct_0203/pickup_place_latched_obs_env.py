@@ -190,36 +190,38 @@ class PickupPlaceLatchedObsEnv(PickupPlaceDirect0510Env):
         controlled_joint_ids = list(self._arm_joint_indices) + list(self._gripper_joint_idx)
         rewards_dict["joint_vel"] = torch.sum(torch.square(self.robot.data.joint_vel[:, controlled_joint_ids]), dim=1)
 
+        # 7. Ground Displacement / Anti-Push Penalty (Round 2: 物體未離地前被推離原位之懲罰)
+        cube_xy = cube_pos_w[:, :2]
+        initial_xy = self.object_initial_pos_w[:, :2]
+        dist_xy = torch.norm(cube_xy - initial_xy, dim=1)
+        is_on_table = (lift_height < 0.015).float()  # 1.5cm 以內視為在桌面上
+        # 允許 5mm 自然沉降微震容差，超過後以 1.5cm 為特徵尺度平滑懲罰
+        excess_push = torch.clamp(dist_xy - 0.005, min=0.0)
+        rewards_dict["displacement"] = is_on_table * torch.tanh(excess_push / 0.015)
+
         # ===== 課程權重讀取 (已按要求改為註解/禁用以防止死鎖，改為直接使用 config 固定權重) =====
-        # w_lift = self._curriculum_term_weights.get("lifting_object", self.cfg.rew_scale_lift)
-        # w_lift_vel = self._curriculum_term_weights.get("lifting_object_velocity", self.cfg.rew_scale_lift_vel)
-        # w_close = self._curriculum_term_weights.get("close_reward", self.cfg.rew_scale_close)
-        # w_goal = self._curriculum_term_weights.get("object_goal_tracking", self.cfg.rew_scale_goal)
-        # w_goal_fine = self._curriculum_term_weights.get("object_goal_tracking_fine_grained", self.cfg.rew_scale_goal_fine)
-        # w_action = self._curriculum_term_weights.get("action_rate", self.cfg.rew_scale_action)
-        # w_joint = self._curriculum_term_weights.get("joint_vel", self.cfg.rew_scale_joint_vel)
         w_reach = self.cfg.rew_scale_reach
         w_lift = self.cfg.rew_scale_lift
         w_goal = self.cfg.rew_scale_goal
         w_goal_fine = self.cfg.rew_scale_goal_fine
         w_action = self.cfg.rew_scale_action
         w_joint = self.cfg.rew_scale_joint_vel
+        w_disp = self.cfg.rew_scale_displacement
 
-        # 計算總獎勵 (hover 與 displacement 已在 config 中設為 0)
+        # 計算總獎勵 (Round 2 納入 displacement 防推懲罰)
         total_reward = (
-            self.cfg.rew_scale_hover * mdp_rewards.pre_grasp_hover_reward(self, std=0.05, hover_height=0.04, object_cfg=SceneEntityCfg("object"))
-            + self.cfg.rew_scale_displacement * mdp_rewards.object_displacement_penalty(self, object_cfg=SceneEntityCfg("object"))
-            + w_reach * rewards_dict["reaching"]
+            w_reach * rewards_dict["reaching"]
             + w_lift * rewards_dict["lifting"]
             + w_goal * rewards_dict["goal"]
             + w_goal_fine * rewards_dict["goal_fine"]
             + w_action * rewards_dict["action_rate"]
             + w_joint * rewards_dict["joint_vel"]
+            + w_disp * rewards_dict["displacement"]
         )
 
         # 累加 Episode 總和日誌 (相容原框架統計)
         self.episode_sums["reward_hover"] += self.cfg.rew_scale_hover * 0.0
-        self.episode_sums["reward_displacement"] += self.cfg.rew_scale_displacement * 0.0
+        self.episode_sums["reward_displacement"] += w_disp * rewards_dict["displacement"]
         self.episode_sums["reward_reaching"] += w_reach * rewards_dict["reaching"]
         self.episode_sums["reward_lifting"] += w_lift * rewards_dict["lifting"]
         self.episode_sums["reward_goal"] += w_goal * rewards_dict["goal"]
@@ -241,6 +243,7 @@ class PickupPlaceLatchedObsEnv(PickupPlaceDirect0510Env):
         self.extras["episode"]["reaching_success"] = torch.mean(is_reached.float())
         self.extras["episode"]["lifting_success"] = torch.mean(is_lifted.float())
         self.extras["episode"]["object_goal_tracking_success"] = torch.mean(is_tracked.float())
+        self.extras["episode"]["mean_push_dist_xy"] = torch.mean(dist_xy).item()
         
         object_bottom_z = mdp_rewards._get_object_bottom_z(self, SceneEntityCfg("object"))
         self.extras["episode"]["mean_lift_height"] = torch.mean(object_bottom_z).item()
