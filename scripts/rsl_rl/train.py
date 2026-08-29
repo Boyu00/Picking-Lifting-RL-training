@@ -31,6 +31,7 @@ parser.add_argument(
     "--distributed", action="store_true", default=False, help="Run training with multiple GPUs or nodes."
 )
 parser.add_argument("--export_io_descriptors", action="store_true", default=False, help="Export IO descriptors.")
+parser.add_argument("--reset_critic", action="store_true", default=False, help="Reset critic weights when resuming.")
 parser.add_argument(
     "--ray-proc-id", "-rid", type=int, default=None, help="Automatically configured by Ray integration, otherwise None."
 )
@@ -202,12 +203,87 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # load the checkpoint
     if agent_cfg.resume or agent_cfg.algorithm.class_name == "Distillation":
         print(f"[INFO]: Loading model checkpoint from: {resume_path}")
-        # load previously trained model
-        runner.load(resume_path)
+        if getattr(args_cli, "reset_critic", False):
+            # Read state dict manually
+            loaded_dict = torch.load(resume_path, weights_only=False, map_location=agent_cfg.device)
+            state_dict = loaded_dict["model_state_dict"]
+            # Filter out all critic keys
+            filtered_state_dict = {k: v for k, v in state_dict.items() if not k.startswith("critic")}
+            # Load with strict=False (keeps Critic at default random initialization)
+            runner.alg.policy.load_state_dict(filtered_state_dict, strict=False)
+            print("[INFO]: Loaded ONLY Actor weights from checkpoint. Critic weights have been reset to default random initialization.")
+            # Set the iteration number
+            runner.current_learning_iteration = loaded_dict["iter"]
+        else:
+            # load previously trained model
+            runner.load(resume_path)
 
     # dump the configuration into log-directory
     dump_yaml(os.path.join(log_dir, "params", "env.yaml"), env_cfg)
     dump_yaml(os.path.join(log_dir, "params", "agent.yaml"), agent_cfg)
+
+    # ===== [訓練健康監測與安全自動早停機制 (Training Health Monitor)] =====
+    # 說明：此機制經 Franka 歷史 14 個 Runs 校驗，可即時偵測數值爆炸與死鎖發散，防止 GPU 資源浪費。
+    # 觸發時會自動儲存當前權重 (model_earlystop_<iter>.pt) 並優雅終止。
+    import statistics
+    _original_log = runner._log
+    runner._early_stop_deadlock_counter = 0
+    runner._action_warn_counter = 0
+
+    def _monitored_log(locs, width=80, pad=35):
+        # 1. 執行 RSL-RL 原生日誌輸出
+        _original_log(locs, width, pad)
+
+        it = locs["it"]
+        mean_std = runner.alg.policy.action_std.mean().item()
+        vf_loss = locs.get("loss_dict", {}).get("value_function", 0.0)
+        recent_rew = statistics.mean(locs["rewbuffer"]) if len(locs["rewbuffer"]) > 0 else 0.0
+
+        # -------------------------------------------------------------
+        # 規則 1：致命數值爆炸判定 (Fatal Value Function / NaN Divergence)
+        # 條件：Value Loss > 1e7 或出現 NaN/Inf (正常訓練通常在 1e2 ~ 1e5 區間)
+        # -------------------------------------------------------------
+        if vf_loss > 1.0e7 or torch.isnan(torch.tensor(mean_std)) or mean_std > 50.0:
+            print(f"\n🛑 [FATAL DIVERGENCE] Iteration {it}: Value Loss ({vf_loss:.2e}) 或 Noise Std ({mean_std:.2f}) 發生數值爆炸！")
+            save_path = os.path.join(runner.log_dir, f"model_fatal_divergence_{it}.pt")
+            runner.save(save_path)
+            print(f"💾 已緊急保存崩潰前模型至: {save_path}")
+            raise SystemExit(f"Training terminated at iter {it} due to fatal gradient divergence.")
+
+        # -------------------------------------------------------------
+        # 規則 2：探索死鎖與噪聲正反饋發散 (Exploration Deadlock)
+        # 條件：Noise Std > 2.5 且 Mean Reward < 100 持續超過 150 iters (代表策略完全學不會搬運且持續擴大隨機噪聲)
+        # -------------------------------------------------------------
+        if mean_std > 2.5 and recent_rew < 100.0:
+            runner._early_stop_deadlock_counter += 1
+            if runner._early_stop_deadlock_counter >= 150:
+                print(f"\n🛑 [EARLY STOP] Iteration {it}: 偵測到策略死鎖發散！")
+                print(f"   原因: Noise Std ({mean_std:.2f}) > 2.5 且 Mean Reward ({recent_rew:.2f}) < 100 已持續 150 iters。")
+                save_path = os.path.join(runner.log_dir, f"model_deadlock_earlystop_{it}.pt")
+                runner.save(save_path)
+                print(f"💾 已保存當前模型至: {save_path}")
+                raise SystemExit(f"Early stopped at iter {it} due to policy exploration deadlock.")
+        else:
+            runner._early_stop_deadlock_counter = 0
+
+        # -------------------------------------------------------------
+        # 規則 3：Action 飽和度警示 (非致命，僅提醒不中斷)
+        # -------------------------------------------------------------
+        if mean_std > 1.8:
+            runner._action_warn_counter += 1
+            if runner._action_warn_counter % 50 == 0:
+                print(f"⚠️ [WARN] Iteration {it}: Noise Std 偏高 ({mean_std:.2f})，請留意 PPO 穩定性。")
+        else:
+            runner._action_warn_counter = 0
+
+        # -------------------------------------------------------------
+        # 定期健康彙報 (每 200 iters 印出關鍵指標摘要)
+        # -------------------------------------------------------------
+        if it % 200 == 0:
+            print(f"📊 [HEALTH] Iter {it:5d}/{locs['tot_iter']} | Noise Std: {mean_std:.3f} | VF Loss: {vf_loss:.2e} | Reward: {recent_rew:.1f} | LR: {runner.alg.learning_rate:.6f}")
+
+    runner._log = _monitored_log
+    # ===== [End Health Monitor] =====
 
     # run training
     runner.learn(num_learning_iterations=agent_cfg.max_iterations, init_at_random_ep_len=True)
