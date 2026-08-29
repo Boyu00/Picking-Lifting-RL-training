@@ -226,7 +226,8 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # 說明：此機制經 Franka 歷史 14 個 Runs 校驗，可即時偵測數值爆炸與死鎖發散，防止 GPU 資源浪費。
     # 觸發時會自動儲存當前權重 (model_earlystop_<iter>.pt) 並優雅終止。
     import statistics
-    _original_log = runner._log
+    _log_method_name = "log" if hasattr(runner, "log") else "_log"
+    _original_log = getattr(runner, _log_method_name)
     runner._early_stop_deadlock_counter = 0
     runner._action_warn_counter = 0
 
@@ -282,7 +283,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         if it % 200 == 0:
             print(f"📊 [HEALTH] Iter {it:5d}/{locs['tot_iter']} | Noise Std: {mean_std:.3f} | VF Loss: {vf_loss:.2e} | Reward: {recent_rew:.1f} | LR: {runner.alg.learning_rate:.6f}")
 
-    runner._log = _monitored_log
+    setattr(runner, _log_method_name, _monitored_log)
     # ===== [End Health Monitor] =====
 
     # run training
