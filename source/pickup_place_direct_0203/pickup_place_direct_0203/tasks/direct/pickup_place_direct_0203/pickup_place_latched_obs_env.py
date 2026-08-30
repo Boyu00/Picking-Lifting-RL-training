@@ -45,6 +45,7 @@ class PickupPlaceLatchedObsEnv(PickupPlaceDirect0510Env):
         # 註冊額外的 episode_sums 鍵以供日誌紀錄
         self.episode_sums["reward_hover"] = torch.zeros(self.num_envs, device=self.device)
         self.episode_sums["reward_displacement"] = torch.zeros(self.num_envs, device=self.device)
+        self.episode_sums["reward_grasp"] = torch.zeros(self.num_envs, device=self.device)
         
         # 同步物理與數據緩衝區，確保 Step 0 數據完全一致
         self.scene.write_data_to_sim()
@@ -165,28 +166,31 @@ class PickupPlaceLatchedObsEnv(PickupPlaceDirect0510Env):
         distance_ee_obj = torch.norm(cube_pos_w - ee_w, dim=1)
         rewards_dict["reaching"] = 1.0 - torch.tanh(distance_ee_obj / self.cfg.reward_settings["reaching_std"])
 
-        # 2. Close on Proximity (Round 3.5: 近距離平滑閉爪引導)
-        #    當 EE 進入方塊 close_threshold (4.5cm) 核心範圍時，給予隨閉合角度增加的引導回報 (1.0 - pos/1.57)
-        close_thresh = self.cfg.reward_settings.get("close_threshold", 0.045)
-        is_in_close_range = (distance_ee_obj < close_thresh).float()
+        # 2. Close on Proximity (Round 4: 近距離微引導，低權重無暴利，僅為探索傾向)
+        close_thresh = self.cfg.reward_settings.get("close_threshold", 0.05)
+        is_near = (distance_ee_obj < close_thresh)
         gripper_pos = self.robot.data.joint_pos[:, self._gripper_joint_idx[0]]
         close_quality = torch.clamp(1.0 - (gripper_pos / 1.57), 0.0, 1.0)
-        rewards_dict["close"] = is_in_close_range * close_quality
+        rewards_dict["close"] = is_near.float() * close_quality
 
-        # 3. Physical Grasp / Joint Jamming (Round 3.5: 實體夾持感知判定)
-        #    當夾爪閉合且物理卡在方塊實體上 (0.25 < pos < 1.15 rad) 且 EE 在方塊周圍 (d < close_threshold)
-        is_jammed = (gripper_pos > 0.25) & (gripper_pos < 1.15)
-        is_grasped = is_jammed & (distance_ee_obj < close_thresh)
+        # 3. Physical Grasp / Motor Stall (Round 4: 物理意志 + 速度停滯 雙核真夾持判定)
+        #    條件: (1) 距離靠近 (2) 策略發力閉爪 (action <= -0.3) (3) 馬達被頂住停轉 (|vel| < 0.15) (4) 阻擋角度區間
+        is_firm_close = (self.actions[:, 6] <= -0.3)
+        gripper_vel = self.robot.data.joint_vel[:, self._gripper_joint_idx[0]]
+        is_motor_stalled = (gripper_vel.abs() < 0.15)
+        is_in_jam_range = (gripper_pos > 0.25) & (gripper_pos < 0.90)
+        is_grasped = is_near & is_firm_close & is_motor_stalled & is_in_jam_range
         rewards_dict["grasp"] = is_grasped.float()
 
-        # 4. Progressive Continuous Lifting Reward (Round 3.5: 連續漸進抬起引導)
-        #    只要夾住並開始抬離桌面，即依高度連續給予正向回報，突破硬門檻死鎖
+        # 4. Progressive Continuous Lifting Reward (Round 4: 沉降遮罩 + 連續漸進抬起大獎)
+        #    在開局前 5 步物體沉降期間屏蔽 Lifting 獎勵，消除掉落假訊號
+        is_settled = (self.episode_length_buf >= 5).float()
         lift_height = cube_pos_w[:, 2] - self.object_initial_pos_w[:, 2]
         lift_prog = torch.clamp(lift_height / self.cfg.reward_settings["lifting_min_height"], 0.0, 1.0)
-        rewards_dict["lifting"] = torch.where(
+        rewards_dict["lifting"] = is_settled * torch.where(
             lift_height > self.cfg.reward_settings["lifting_min_height"],
             torch.ones_like(lift_prog),
-            lift_prog * is_grasped.float()
+            lift_prog * (lift_height > 0.005).float()
         )
 
         # 5. Object Goal Tracking (std = 0.6)
@@ -208,26 +212,19 @@ class PickupPlaceLatchedObsEnv(PickupPlaceDirect0510Env):
         controlled_joint_ids = list(self._arm_joint_indices) + list(self._gripper_joint_idx)
         rewards_dict["joint_vel"] = torch.sum(torch.square(self.robot.data.joint_vel[:, controlled_joint_ids]), dim=1)
 
-        # 9. Ground Displacement / Anti-Push Penalty (Round 2: 物體未離地前被推離原位之懲罰)
+        # 9. Ground Displacement / Anti-Push Penalty (Round 4: 8mm 對中滑移寬容死區)
         cube_xy = cube_pos_w[:, :2]
         initial_xy = self.object_initial_pos_w[:, :2]
         dist_xy = torch.norm(cube_xy - initial_xy, dim=1)
         is_on_table = (lift_height < 0.015).float()  # 1.5cm 以內視為在桌面上
-        # 允許 5mm 自然沉降微震容差，超過後以 1.5cm 為特徵尺度平滑懲罰
-        excess_push = torch.clamp(dist_xy - 0.005, min=0.0)
+        deadzone = self.cfg.reward_settings.get("displacement_deadzone", 0.008)
+        excess_push = torch.clamp(dist_xy - deadzone, min=0.0)
         rewards_dict["displacement"] = is_on_table * torch.tanh(excess_push / 0.015)
 
-        # ===== 課程權重讀取 (已按要求改為註解/禁用以防止死鎖，改為直接使用 config 固定權重) =====
-        # w_lift = self._curriculum_term_weights.get("lifting_object", self.cfg.rew_scale_lift)
-        # w_lift_vel = self._curriculum_term_weights.get("lifting_object_velocity", self.cfg.rew_scale_lift_vel)
-        # w_close = self._curriculum_term_weights.get("close_reward", self.cfg.rew_scale_close)
-        # w_goal = self._curriculum_term_weights.get("object_goal_tracking", self.cfg.rew_scale_goal)
-        # w_goal_fine = self._curriculum_term_weights.get("object_goal_tracking_fine_grained", self.cfg.rew_scale_goal_fine)
-        # w_action = self._curriculum_term_weights.get("action_rate", self.cfg.rew_scale_action)
-        # w_joint = self._curriculum_term_weights.get("joint_vel", self.cfg.rew_scale_joint_vel)
+        # ===== 權重讀取 =====
         w_reach = self.cfg.rew_scale_reach
-        w_close = getattr(self.cfg, "rew_scale_close", 2.0)
-        w_grasp = getattr(self.cfg, "rew_scale_grasp", 4.0)
+        w_close = getattr(self.cfg, "rew_scale_close", 0.2)
+        w_grasp = getattr(self.cfg, "rew_scale_grasp", 2.0)
         w_lift = self.cfg.rew_scale_lift
         w_goal = self.cfg.rew_scale_goal
         w_goal_fine = self.cfg.rew_scale_goal_fine
@@ -235,7 +232,7 @@ class PickupPlaceLatchedObsEnv(PickupPlaceDirect0510Env):
         w_joint = self.cfg.rew_scale_joint_vel
         w_disp = self.cfg.rew_scale_displacement
 
-        # 計算總獎勵 (Round 3.5 乾淨、無衝突多階梯物理引導)
+        # 計算總獎勵 (Round 4 嚴謹物理防作弊階梯)
         total_reward = (
             w_reach * rewards_dict["reaching"]
             + w_close * rewards_dict["close"]
@@ -248,10 +245,11 @@ class PickupPlaceLatchedObsEnv(PickupPlaceDirect0510Env):
             + w_disp * rewards_dict["displacement"]
         )
 
-        # 累加 Episode 總和日誌 (相容原框架統計)
+        # 累加 Episode 總和日誌 (獨立分開紀錄，完全透明)
         self.episode_sums["reward_displacement"] += w_disp * rewards_dict["displacement"]
         self.episode_sums["reward_reaching"] += w_reach * rewards_dict["reaching"]
-        self.episode_sums["reward_close"] += w_close * rewards_dict["close"] + w_grasp * rewards_dict["grasp"]
+        self.episode_sums["reward_close"] += w_close * rewards_dict["close"]
+        self.episode_sums["reward_grasp"] += w_grasp * rewards_dict["grasp"]
         self.episode_sums["reward_lifting"] += w_lift * rewards_dict["lifting"]
         self.episode_sums["reward_goal"] += w_goal * rewards_dict["goal"]
         self.episode_sums["reward_goal_fine"] += w_goal_fine * rewards_dict["goal_fine"]
@@ -260,7 +258,7 @@ class PickupPlaceLatchedObsEnv(PickupPlaceDirect0510Env):
 
         # 指標紀錄 (對應 Franka 標準)
         is_reached = distance_ee_obj < self.cfg.reward_settings["object_is_reached_threshold"]
-        is_lifted = lift_height > self.cfg.reward_settings["lifting_min_height"]
+        is_lifted = (lift_height > self.cfg.reward_settings["lifting_min_height"]) & (is_settled > 0.5)
         is_tracked = distance_obj_goal < 0.08
 
         # 寫入日誌系統

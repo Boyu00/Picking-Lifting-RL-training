@@ -70,13 +70,13 @@ class PickupPlaceLatchedObsEnvCfg(PickupPlaceDirect0510EnvCfg):
         "gripper_scale": 1.0,
     }
 
-    # ===== 獎勵尺度設定 (Round 3.5: 近距閉爪引導 + 實體夾持感知 + 連續抬起) =====
+    # ===== 獎勵尺度設定 (Round 4: 物理阻擋鎖定 + 抬起大獎主導 + 防作弊架構) =====
     rew_scale_hover = 0.0              # 關閉
-    rew_scale_displacement = -1.0       # Round 2: 保守地面防推懲罰 (-1.0)
+    rew_scale_displacement = -1.0       # Round 2/4: 地面防推懲罰 (-1.0, 帶 8mm 寬容死區)
     rew_scale_reach = 1.0              # 對齊 Franka: 空間接近 (+1.0)
-    rew_scale_close = 2.0              # Round 3.5: 近距閉爪平滑引導 (+2.0 * (1 - pos/1.57))
-    rew_scale_grasp = 4.0              # Round 3.5: 實體夾持感知 (Joint Jamming) 獎勵 (+4.0)
-    rew_scale_lift = 5.0               # 對齊 Franka: 連續漸進抬起 (+5.0 * height)
+    rew_scale_close = 0.2              # Round 4: 近距微引導 (+0.2 * (1 - pos/1.57)，無暴利)
+    rew_scale_grasp = 2.0              # Round 4: 物理阻擋真夾持 (+2.0，需 action<=-0.3 且 vel 停滯)
+    rew_scale_lift = 8.0               # Round 4: 連續漸進抬起大獎 (+8.0 * height，全場核心驅動力)
     rew_scale_goal = 16.0              # 對齊 Franka
     rew_scale_goal_fine = 5.0          # 對齊 Franka
     rew_scale_action = -1e-4           # 對齊 Franka: 動作平滑約束 (-1e-4)
@@ -86,8 +86,9 @@ class PickupPlaceLatchedObsEnvCfg(PickupPlaceDirect0510EnvCfg):
     # ===== 獎勵細部參數 (對齊 Franka 標準與 DexCube 尺寸) =====
     reward_settings = {
         "reaching_std": 0.1,                    # 對齊 Franka
-        "lifting_min_height": 0.04,              # 對齊 Franka
-        "close_threshold": 0.045,                # 適應 DexCube (scale 0.5, 邊長 2.5cm) 的包覆閉爪門檻 (4.5cm)
+        "lifting_min_height": 0.04,              # 對齊 Franka (4cm)
+        "close_threshold": 0.05,                 # 5.0cm 充分容差接近門檻
+        "displacement_deadzone": 0.008,          # 8mm 夾爪對中滑移容差
         "goal_std": 0.6,                         # 對齊 Franka
         "goal_min_height": 0.04,                 # 對齊 Franka
         "goal_fine_std": 0.05,                   # 對齊 Franka
