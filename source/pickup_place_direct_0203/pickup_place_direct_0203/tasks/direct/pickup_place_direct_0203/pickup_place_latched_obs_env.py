@@ -165,27 +165,21 @@ class PickupPlaceLatchedObsEnv(PickupPlaceDirect0510Env):
         distance_ee_obj = torch.norm(cube_pos_w - ee_w, dim=1)
         rewards_dict["reaching"] = 1.0 - torch.tanh(distance_ee_obj / self.cfg.reward_settings["reaching_std"])
 
-        # 2. Gripper State & Joint Jamming (Round 3: 實體夾持感知判定)
-        #    全開 = 1.57 rad, 全閉 = 0.0 rad. 夾住 DexCube (scale 0.5) 實體時，關節卡在 0.25 ~ 1.15 rad
+        # 2. Close on Proximity (Round 3.5: 近距離平滑閉爪引導)
+        #    當 EE 進入方塊 3.5cm 核心範圍時，給予隨閉合角度增加的引導回報 (1.0 - pos/1.57)
+        is_in_close_range = (distance_ee_obj < 0.035).float()
         gripper_pos = self.robot.data.joint_pos[:, self._gripper_joint_idx[0]]
+        close_quality = torch.clamp(1.0 - (gripper_pos / 1.57), 0.0, 1.0)
+        rewards_dict["close"] = is_in_close_range * close_quality
+
+        # 3. Physical Grasp / Joint Jamming (Round 3.5: 實體夾持感知判定)
+        #    當夾爪閉合且物理卡在方塊實體上 (0.25 < pos < 1.15 rad) 且 EE 在方塊旁
         is_jammed = (gripper_pos > 0.25) & (gripper_pos < 1.15)
-        is_near = distance_ee_obj < 0.035
-        is_grasped = is_jammed & is_near
+        is_grasped = is_jammed & (distance_ee_obj < 0.035)
         rewards_dict["grasp"] = is_grasped.float()
 
-        # 3. Deep Enclosure Guidance (Round 3: 張開夾爪深度包覆引導)
-        #    鼓勵夾爪在張開狀態下大膽垂直下沉至方塊 2.5cm 核心區域
-        is_open_cmd = (self.clipped_actions[:, 6] > 0.0)
-        rewards_dict["enclosure"] = is_open_cmd.float() * (1.0 - torch.tanh(distance_ee_obj / 0.025))
-
-        # 4. Premature Close Penalty (Round 3: 遠距離提早閉爪微懲罰)
-        #    距離 > 5cm 遠處時若提早閉合夾爪則給予微扣分，引導時序「先開爪接近 -> 到位後閉爪」
-        is_far = (distance_ee_obj > 0.05).float()
-        is_closed_cmd = (self.clipped_actions[:, 6] <= 0.0).float()
-        rewards_dict["premature_close"] = is_far * is_closed_cmd
-
-        # 5. Progressive Lifting Reward (Round 3: 連續漸進抬起引導)
-        #    只要夾住並開始抬離桌面，即給予高度連續正向回報，突破硬門檻死鎖
+        # 4. Progressive Continuous Lifting Reward (Round 3.5: 連續漸進抬起引導)
+        #    只要夾住並開始抬離桌面，即依高度連續給予正向回報，突破硬門檻死鎖
         lift_height = cube_pos_w[:, 2] - self.object_initial_pos_w[:, 2]
         lift_prog = torch.clamp(lift_height / self.cfg.reward_settings["lifting_min_height"], 0.0, 1.0)
         rewards_dict["lifting"] = torch.where(
@@ -194,26 +188,26 @@ class PickupPlaceLatchedObsEnv(PickupPlaceDirect0510Env):
             lift_prog * is_grasped.float()
         )
 
-        # 6. Object Goal Tracking (std = 0.6)
+        # 5. Object Goal Tracking (std = 0.6)
         target_pos_w = self.target_poses + self.scene.env_origins
         distance_obj_goal = torch.norm(target_pos_w - cube_pos_w, dim=1)
         rewards_dict["goal"] = (
             lift_height > self.cfg.reward_settings["goal_min_height"]
         ).float() * (1.0 - torch.tanh(distance_obj_goal / self.cfg.reward_settings["goal_std"]))
 
-        # 7. Object Goal Tracking Fine-Grained (std = 0.05)
+        # 6. Object Goal Tracking Fine-Grained (std = 0.05)
         rewards_dict["goal_fine"] = (
             lift_height > self.cfg.reward_settings["goal_fine_min_height"]
         ).float() * (1.0 - torch.tanh(distance_obj_goal / self.cfg.reward_settings["goal_fine_std"]))
 
-        # 8. Actions L2 rate penalty (作用在未裁剪的 actions 上以拉回 Actor 均值)
+        # 7. Actions L2 rate penalty (作用在未裁剪的 actions 上以拉回 Actor 均值)
         rewards_dict["action_rate"] = torch.sum(torch.square(self.actions), dim=1)
 
-        # 9. Joint velocity penalty (僅計算 5 軸手臂 + 1 軸夾爪，排除底盤 4 輪與未受控關節之高頻微震)
+        # 8. Joint velocity penalty (僅計算 5 軸手臂 + 1 軸夾爪，排除底盤 4 輪與未受控關節之高頻微震)
         controlled_joint_ids = list(self._arm_joint_indices) + list(self._gripper_joint_idx)
         rewards_dict["joint_vel"] = torch.sum(torch.square(self.robot.data.joint_vel[:, controlled_joint_ids]), dim=1)
 
-        # 10. Ground Displacement / Anti-Push Penalty (Round 2: 物體未離地前被推離原位之懲罰)
+        # 9. Ground Displacement / Anti-Push Penalty (Round 2: 物體未離地前被推離原位之懲罰)
         cube_xy = cube_pos_w[:, :2]
         initial_xy = self.object_initial_pos_w[:, :2]
         dist_xy = torch.norm(cube_xy - initial_xy, dim=1)
@@ -224,9 +218,8 @@ class PickupPlaceLatchedObsEnv(PickupPlaceDirect0510Env):
 
         # ===== 權重讀取 =====
         w_reach = self.cfg.rew_scale_reach
-        w_enclosure = getattr(self.cfg, "rew_scale_enclosure", 0.0)
-        w_grasp = getattr(self.cfg, "rew_scale_grasp", 0.0)
-        w_premature = getattr(self.cfg, "rew_scale_premature_close", 0.0)
+        w_close = getattr(self.cfg, "rew_scale_close", 2.0)
+        w_grasp = getattr(self.cfg, "rew_scale_grasp", 4.0)
         w_lift = self.cfg.rew_scale_lift
         w_goal = self.cfg.rew_scale_goal
         w_goal_fine = self.cfg.rew_scale_goal_fine
@@ -234,12 +227,11 @@ class PickupPlaceLatchedObsEnv(PickupPlaceDirect0510Env):
         w_joint = self.cfg.rew_scale_joint_vel
         w_disp = self.cfg.rew_scale_displacement
 
-        # 計算總獎勵 (Round 3 完整多階梯物理引導)
+        # 計算總獎勵 (Round 3.5 乾淨、無衝突多階梯物理引導)
         total_reward = (
             w_reach * rewards_dict["reaching"]
-            + w_enclosure * rewards_dict["enclosure"]
+            + w_close * rewards_dict["close"]
             + w_grasp * rewards_dict["grasp"]
-            + w_premature * rewards_dict["premature_close"]
             + w_lift * rewards_dict["lifting"]
             + w_goal * rewards_dict["goal"]
             + w_goal_fine * rewards_dict["goal_fine"]
@@ -249,10 +241,9 @@ class PickupPlaceLatchedObsEnv(PickupPlaceDirect0510Env):
         )
 
         # 累加 Episode 總和日誌 (相容原框架統計)
-        self.episode_sums["reward_hover"] += w_enclosure * rewards_dict["enclosure"]
         self.episode_sums["reward_displacement"] += w_disp * rewards_dict["displacement"]
         self.episode_sums["reward_reaching"] += w_reach * rewards_dict["reaching"]
-        self.episode_sums["reward_close"] += w_grasp * rewards_dict["grasp"]
+        self.episode_sums["reward_close"] += w_close * rewards_dict["close"] + w_grasp * rewards_dict["grasp"]
         self.episode_sums["reward_lifting"] += w_lift * rewards_dict["lifting"]
         self.episode_sums["reward_goal"] += w_goal * rewards_dict["goal"]
         self.episode_sums["reward_goal_fine"] += w_goal_fine * rewards_dict["goal_fine"]
