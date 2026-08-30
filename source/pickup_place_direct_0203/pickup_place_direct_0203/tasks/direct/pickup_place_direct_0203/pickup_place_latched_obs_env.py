@@ -182,6 +182,7 @@ class PickupPlaceLatchedObsEnv(PickupPlaceDirect0510Env):
         grasp_thresh = self.cfg.reward_settings.get("close_threshold", 0.06)
         is_in_grasp_range = (distance_ee_obj < grasp_thresh)
         is_firm_close = (self.actions[:, 6] <= -0.2)
+        gripper_pos = self.robot.data.joint_pos[:, self._gripper_joint_idx[0]]
         gripper_vel = self.robot.data.joint_vel[:, self._gripper_joint_idx[0]]
         is_motor_stalled = (gripper_vel.abs() < 0.30)
         is_in_jam_range = (gripper_pos > 0.25) & (gripper_pos < 0.90)
