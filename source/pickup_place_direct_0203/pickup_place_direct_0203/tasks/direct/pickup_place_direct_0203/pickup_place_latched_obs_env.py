@@ -160,15 +160,11 @@ class PickupPlaceLatchedObsEnv(PickupPlaceDirect0510Env):
         """計算對齊 Franka 的直觀密集獎勵值 (繞過課程系統)。"""
         rewards_dict = {}
 
-        # 1. Multiplicative Reaching Reward (Round 6: 乘法門控，徹底根除高空懸停刷分漏洞)
+        # 1. 3D Euclidean Reaching Reward (Franka 標準：全向 3D 空間無死角直接牽引至方塊)
         cube_pos_w = self.scene["object"].data.root_com_pose_w[:, :3]
         ee_w = self.ee_frame.data.target_pos_w[..., 0, :]
-        dist_xy = torch.norm(cube_pos_w[:, :2] - ee_w[:, :2], dim=1)
-        dist_z = torch.abs(cube_pos_w[:, 2] - ee_w[:, 2])
         distance_ee_obj = torch.norm(cube_pos_w - ee_w, dim=1)
-        reach_xy = 1.0 - torch.tanh(dist_xy / self.cfg.reward_settings.get("reaching_std", 0.08))
-        reach_z = 1.0 - torch.tanh(dist_z / self.cfg.reward_settings.get("reaching_z_std", 0.08))
-        rewards_dict["reaching"] = reach_xy * reach_z
+        rewards_dict["reaching"] = 1.0 - torch.tanh(distance_ee_obj / self.cfg.reward_settings["reaching_std"])
 
         # 2. Close on Proximity (Round 6: 動作意圖即時引導，0.2 快速飽和提供充足梯度)
         close_std = self.cfg.reward_settings.get("close_std", 0.08)
