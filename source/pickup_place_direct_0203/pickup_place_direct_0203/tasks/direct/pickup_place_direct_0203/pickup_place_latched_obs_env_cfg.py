@@ -83,11 +83,11 @@ class PickupPlaceLatchedObsEnvCfg(PickupPlaceDirect0510EnvCfg):
     rew_scale_joint_vel = -1e-4        # 對齊 Franka: 關節速度約束 (-1e-4)
     rew_scale_torques = 0.0            # 關閉
 
-    # ===== 獎勵細部參數 (對齊 Franka 標準) =====
+    # ===== 獎勵細部參數 (對齊 Franka 標準與 DexCube 尺寸) =====
     reward_settings = {
         "reaching_std": 0.1,                    # 對齊 Franka
         "lifting_min_height": 0.04,              # 對齊 Franka
-        "close_threshold": 0.08,
+        "close_threshold": 0.045,                # 適應 DexCube (scale 0.5, 邊長 2.5cm) 的包覆閉爪門檻 (4.5cm)
         "goal_std": 0.6,                         # 對齊 Franka
         "goal_min_height": 0.04,                 # 對齊 Franka
         "goal_fine_std": 0.05,                   # 對齊 Franka

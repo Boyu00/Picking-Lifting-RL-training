@@ -166,16 +166,17 @@ class PickupPlaceLatchedObsEnv(PickupPlaceDirect0510Env):
         rewards_dict["reaching"] = 1.0 - torch.tanh(distance_ee_obj / self.cfg.reward_settings["reaching_std"])
 
         # 2. Close on Proximity (Round 3.5: 近距離平滑閉爪引導)
-        #    當 EE 進入方塊 3.5cm 核心範圍時，給予隨閉合角度增加的引導回報 (1.0 - pos/1.57)
-        is_in_close_range = (distance_ee_obj < 0.035).float()
+        #    當 EE 進入方塊 close_threshold (4.5cm) 核心範圍時，給予隨閉合角度增加的引導回報 (1.0 - pos/1.57)
+        close_thresh = self.cfg.reward_settings.get("close_threshold", 0.045)
+        is_in_close_range = (distance_ee_obj < close_thresh).float()
         gripper_pos = self.robot.data.joint_pos[:, self._gripper_joint_idx[0]]
         close_quality = torch.clamp(1.0 - (gripper_pos / 1.57), 0.0, 1.0)
         rewards_dict["close"] = is_in_close_range * close_quality
 
         # 3. Physical Grasp / Joint Jamming (Round 3.5: 實體夾持感知判定)
-        #    當夾爪閉合且物理卡在方塊實體上 (0.25 < pos < 1.15 rad) 且 EE 在方塊旁
+        #    當夾爪閉合且物理卡在方塊實體上 (0.25 < pos < 1.15 rad) 且 EE 在方塊周圍 (d < close_threshold)
         is_jammed = (gripper_pos > 0.25) & (gripper_pos < 1.15)
-        is_grasped = is_jammed & (distance_ee_obj < 0.035)
+        is_grasped = is_jammed & (distance_ee_obj < close_thresh)
         rewards_dict["grasp"] = is_grasped.float()
 
         # 4. Progressive Continuous Lifting Reward (Round 3.5: 連續漸進抬起引導)
@@ -216,7 +217,14 @@ class PickupPlaceLatchedObsEnv(PickupPlaceDirect0510Env):
         excess_push = torch.clamp(dist_xy - 0.005, min=0.0)
         rewards_dict["displacement"] = is_on_table * torch.tanh(excess_push / 0.015)
 
-        # ===== 權重讀取 =====
+        # ===== 課程權重讀取 (已按要求改為註解/禁用以防止死鎖，改為直接使用 config 固定權重) =====
+        # w_lift = self._curriculum_term_weights.get("lifting_object", self.cfg.rew_scale_lift)
+        # w_lift_vel = self._curriculum_term_weights.get("lifting_object_velocity", self.cfg.rew_scale_lift_vel)
+        # w_close = self._curriculum_term_weights.get("close_reward", self.cfg.rew_scale_close)
+        # w_goal = self._curriculum_term_weights.get("object_goal_tracking", self.cfg.rew_scale_goal)
+        # w_goal_fine = self._curriculum_term_weights.get("object_goal_tracking_fine_grained", self.cfg.rew_scale_goal_fine)
+        # w_action = self._curriculum_term_weights.get("action_rate", self.cfg.rew_scale_action)
+        # w_joint = self._curriculum_term_weights.get("joint_vel", self.cfg.rew_scale_joint_vel)
         w_reach = self.cfg.rew_scale_reach
         w_close = getattr(self.cfg, "rew_scale_close", 2.0)
         w_grasp = getattr(self.cfg, "rew_scale_grasp", 4.0)
