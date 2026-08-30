@@ -85,7 +85,8 @@ class PickupPlaceLatchedObsEnvCfg(PickupPlaceDirect0510EnvCfg):
 
     # ===== 獎勵細部參數 (對齊 Franka 標準與 DexCube 尺寸) =====
     reward_settings = {
-        "reaching_std": 0.1,                    # 對齊 Franka
+        "reaching_std": 0.08,                   # 8.0cm XY 水平對中尺度
+        "reaching_z_std": 0.035,                # 3.5cm 垂直深度下沉尺度 (消除懸停盲區，直插到底)
         "close_std": 0.08,                      # 8.0cm 平滑連續接近衰減尺度 (消除硬門檻斷崖)
         "close_threshold": 0.06,                # 6.0cm 實體夾持感知作用距離
         "lifting_min_height": 0.04,             # 對齊 Franka (4cm)

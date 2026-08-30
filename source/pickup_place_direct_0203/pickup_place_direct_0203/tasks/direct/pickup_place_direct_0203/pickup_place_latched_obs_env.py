@@ -160,18 +160,21 @@ class PickupPlaceLatchedObsEnv(PickupPlaceDirect0510Env):
         """計算對齊 Franka 的直觀密集獎勵值 (繞過課程系統)。"""
         rewards_dict = {}
 
-        # 1. Reaching Reward
+        # 1. Decoupled Reaching Reward (Round 5.5: 水平對中 + 垂直深度下沉解耦引導，消除 3.7cm 懸停盲區)
         cube_pos_w = self.scene["object"].data.root_com_pose_w[:, :3]
         ee_w = self.ee_frame.data.target_pos_w[..., 0, :]
+        dist_xy = torch.norm(cube_pos_w[:, :2] - ee_w[:, :2], dim=1)
+        dist_z = torch.abs(cube_pos_w[:, 2] - ee_w[:, 2])
         distance_ee_obj = torch.norm(cube_pos_w - ee_w, dim=1)
-        rewards_dict["reaching"] = 1.0 - torch.tanh(distance_ee_obj / self.cfg.reward_settings["reaching_std"])
+        reach_xy = 1.0 - torch.tanh(dist_xy / self.cfg.reward_settings.get("reaching_std", 0.08))
+        reach_z = 1.0 - torch.tanh(dist_z / self.cfg.reward_settings.get("reaching_z_std", 0.035))
+        rewards_dict["reaching"] = 0.5 * reach_xy + 0.5 * reach_z
 
-        # 2. Close on Proximity (Round 5: 平滑連續距離衰減閉爪引導，徹底根除硬門檻斷崖)
+        # 2. Close on Proximity (Round 5.5: 動作意圖即時閉爪引導，消除 0.66s 物理時延斷層)
         close_std = self.cfg.reward_settings.get("close_std", 0.08)
         close_proximity = torch.clamp(1.0 - (distance_ee_obj / close_std), 0.0, 1.0)
-        gripper_pos = self.robot.data.joint_pos[:, self._gripper_joint_idx[0]]
-        close_quality = torch.clamp(1.0 - (gripper_pos / 1.57), 0.0, 1.0)
-        rewards_dict["close"] = close_proximity * close_quality
+        close_intent = torch.clamp(-self.actions[:, 6], 0.0, 1.0)
+        rewards_dict["close"] = close_proximity * close_intent
 
         # 3. Physical Grasp / Motor Stall (Round 5: 物理意志 + 速度停滯 雙核真夾持判定)
         #    條件: (1) 距離接近方塊 (d < 0.06m) (2) 策略發力閉爪 (action <= -0.2)
