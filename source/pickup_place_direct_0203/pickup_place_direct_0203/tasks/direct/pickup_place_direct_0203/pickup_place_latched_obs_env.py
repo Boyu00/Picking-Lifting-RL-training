@@ -166,20 +166,23 @@ class PickupPlaceLatchedObsEnv(PickupPlaceDirect0510Env):
         distance_ee_obj = torch.norm(cube_pos_w - ee_w, dim=1)
         rewards_dict["reaching"] = 1.0 - torch.tanh(distance_ee_obj / self.cfg.reward_settings["reaching_std"])
 
-        # 2. Close on Proximity (Round 4.5: 充足近距閉爪引導，提供明確探索優勢)
-        close_thresh = self.cfg.reward_settings.get("close_threshold", 0.05)
-        is_near = (distance_ee_obj < close_thresh)
+        # 2. Close on Proximity (Round 5: 平滑連續距離衰減閉爪引導，徹底根除硬門檻斷崖)
+        close_std = self.cfg.reward_settings.get("close_std", 0.08)
+        close_proximity = torch.clamp(1.0 - (distance_ee_obj / close_std), 0.0, 1.0)
         gripper_pos = self.robot.data.joint_pos[:, self._gripper_joint_idx[0]]
         close_quality = torch.clamp(1.0 - (gripper_pos / 1.57), 0.0, 1.0)
-        rewards_dict["close"] = is_near.float() * close_quality
+        rewards_dict["close"] = close_proximity * close_quality
 
-        # 3. Physical Grasp / Motor Stall (Round 4.5: 物理意志 + 速度停滯 雙核真夾持判定)
-        #    條件: (1) 距離靠近 (2) 策略發力閉爪 (action <= -0.2) (3) 馬達接觸停滯 (|vel| < 0.30) (4) 阻擋角度區間
+        # 3. Physical Grasp / Motor Stall (Round 5: 物理意志 + 速度停滯 雙核真夾持判定)
+        #    條件: (1) 距離接近方塊 (d < 0.06m) (2) 策略發力閉爪 (action <= -0.2)
+        #          (3) 馬達接觸停滯 (|vel| < 0.30) (4) 關節卡入阻擋角度 (0.25 < pos < 0.90)
+        grasp_thresh = self.cfg.reward_settings.get("close_threshold", 0.06)
+        is_in_grasp_range = (distance_ee_obj < grasp_thresh)
         is_firm_close = (self.actions[:, 6] <= -0.2)
         gripper_vel = self.robot.data.joint_vel[:, self._gripper_joint_idx[0]]
         is_motor_stalled = (gripper_vel.abs() < 0.30)
         is_in_jam_range = (gripper_pos > 0.25) & (gripper_pos < 0.90)
-        is_grasped = is_near & is_firm_close & is_motor_stalled & is_in_jam_range
+        is_grasped = is_in_grasp_range & is_firm_close & is_motor_stalled & is_in_jam_range
         rewards_dict["grasp"] = is_grasped.float()
 
         # 4. Progressive Continuous Lifting Reward (Round 4: 沉降遮罩 + 連續漸進抬起大獎)
@@ -230,7 +233,7 @@ class PickupPlaceLatchedObsEnv(PickupPlaceDirect0510Env):
         # w_action = self._curriculum_term_weights.get("action_rate", self.cfg.rew_scale_action)
         # w_joint = self._curriculum_term_weights.get("joint_vel", self.cfg.rew_scale_joint_vel)
         w_reach = self.cfg.rew_scale_reach
-        w_close = getattr(self.cfg, "rew_scale_close", 0.8)
+        w_close = getattr(self.cfg, "rew_scale_close", 1.0)
         w_grasp = getattr(self.cfg, "rew_scale_grasp", 2.0)
         w_lift = self.cfg.rew_scale_lift
         w_goal = self.cfg.rew_scale_goal

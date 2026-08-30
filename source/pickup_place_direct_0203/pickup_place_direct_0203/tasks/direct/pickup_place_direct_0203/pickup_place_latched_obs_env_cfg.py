@@ -70,13 +70,13 @@ class PickupPlaceLatchedObsEnvCfg(PickupPlaceDirect0510EnvCfg):
         "gripper_scale": 1.0,
     }
 
-    # ===== 獎勵尺度設定 (Round 4.5: 充足閉爪牽引 + 物理阻擋鎖定 + 抬起大獎主導) =====
+    # ===== 獎勵尺度設定 (Round 5: 平滑連續閉爪引導 + 雙核真夾持 + 抬起大獎主導) =====
     rew_scale_hover = 0.0              # 關閉
-    rew_scale_displacement = -1.0       # Round 2/4: 地面防推懲罰 (-1.0, 帶 8mm 寬容死區)
+    rew_scale_displacement = -1.0       # Round 2/4/5: 地面防推懲罰 (-1.0, 帶 8mm 寬容死區)
     rew_scale_reach = 1.0              # 對齊 Franka: 空間接近 (+1.0)
-    rew_scale_close = 0.8              # Round 4.5: 充足近距閉爪引導 (+0.8 * (1 - pos/1.57)，提供明確探索優勢)
-    rew_scale_grasp = 2.0              # Round 4.5: 物理阻擋真夾持 (+2.0，需 action<=-0.2 且 vel 停滯)
-    rew_scale_lift = 8.0               # Round 4: 連續漸進抬起大獎 (+8.0 * height，全場核心驅動力)
+    rew_scale_close = 1.0              # Round 5: 平滑連續閉爪引導 (+1.0 * proximity * close_quality，徹底根除硬門檻斷崖)
+    rew_scale_grasp = 2.0              # Round 5: 物理阻擋真夾持 (+2.0，需 action<=-0.2 且 vel 停滯)
+    rew_scale_lift = 8.0               # Round 5: 連續漸進抬起大獎 (+8.0 * height，全場核心驅動力)
     rew_scale_goal = 16.0              # 對齊 Franka
     rew_scale_goal_fine = 5.0          # 對齊 Franka
     rew_scale_action = -1e-4           # 對齊 Franka: 動作平滑約束 (-1e-4)
@@ -86,14 +86,15 @@ class PickupPlaceLatchedObsEnvCfg(PickupPlaceDirect0510EnvCfg):
     # ===== 獎勵細部參數 (對齊 Franka 標準與 DexCube 尺寸) =====
     reward_settings = {
         "reaching_std": 0.1,                    # 對齊 Franka
-        "lifting_min_height": 0.04,              # 對齊 Franka (4cm)
-        "close_threshold": 0.05,                 # 5.0cm 充分容差接近門檻
-        "displacement_deadzone": 0.008,          # 8mm 夾爪對中滑移容差
-        "goal_std": 0.6,                         # 對齊 Franka
-        "goal_min_height": 0.04,                 # 對齊 Franka
-        "goal_fine_std": 0.05,                   # 對齊 Franka
-        "goal_fine_min_height": 0.04,            # 對齊 Franka
-        "object_is_reached_threshold": 0.04,     # 對齊 Franka
+        "close_std": 0.08,                      # 8.0cm 平滑連續接近衰減尺度 (消除硬門檻斷崖)
+        "close_threshold": 0.06,                # 6.0cm 實體夾持感知作用距離
+        "lifting_min_height": 0.04,             # 對齊 Franka (4cm)
+        "displacement_deadzone": 0.008,         # 8mm 夾爪對中滑移容差
+        "goal_std": 0.6,                        # 對齊 Franka
+        "goal_min_height": 0.04,                # 對齊 Franka
+        "goal_fine_std": 0.05,                  # 對齊 Franka
+        "goal_fine_min_height": 0.04,           # 對齊 Franka
+        "object_is_reached_threshold": 0.04,    # 對齊 Franka
     }
 
     # ===== 物體尺寸縮放設定 =====
