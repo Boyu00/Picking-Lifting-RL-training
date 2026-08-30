@@ -70,12 +70,12 @@ class PickupPlaceLatchedObsEnvCfg(PickupPlaceDirect0510EnvCfg):
         "gripper_scale": 1.0,
     }
 
-    # ===== 獎勵尺度設定 (Round 4: 物理阻擋鎖定 + 抬起大獎主導 + 防作弊架構) =====
+    # ===== 獎勵尺度設定 (Round 4.5: 充足閉爪牽引 + 物理阻擋鎖定 + 抬起大獎主導) =====
     rew_scale_hover = 0.0              # 關閉
     rew_scale_displacement = -1.0       # Round 2/4: 地面防推懲罰 (-1.0, 帶 8mm 寬容死區)
     rew_scale_reach = 1.0              # 對齊 Franka: 空間接近 (+1.0)
-    rew_scale_close = 0.2              # Round 4: 近距微引導 (+0.2 * (1 - pos/1.57)，無暴利)
-    rew_scale_grasp = 2.0              # Round 4: 物理阻擋真夾持 (+2.0，需 action<=-0.3 且 vel 停滯)
+    rew_scale_close = 0.8              # Round 4.5: 充足近距閉爪引導 (+0.8 * (1 - pos/1.57)，提供明確探索優勢)
+    rew_scale_grasp = 2.0              # Round 4.5: 物理阻擋真夾持 (+2.0，需 action<=-0.2 且 vel 停滯)
     rew_scale_lift = 8.0               # Round 4: 連續漸進抬起大獎 (+8.0 * height，全場核心驅動力)
     rew_scale_goal = 16.0              # 對齊 Franka
     rew_scale_goal_fine = 5.0          # 對齊 Franka
