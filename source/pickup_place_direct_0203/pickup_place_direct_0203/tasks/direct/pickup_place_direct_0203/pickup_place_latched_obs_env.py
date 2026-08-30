@@ -160,28 +160,28 @@ class PickupPlaceLatchedObsEnv(PickupPlaceDirect0510Env):
         """計算對齊 Franka 的直觀密集獎勵值 (繞過課程系統)。"""
         rewards_dict = {}
 
-        # 1. Decoupled Reaching Reward (Round 5.5: 水平對中 + 垂直深度下沉解耦引導，消除 3.7cm 懸停盲區)
+        # 1. Multiplicative Reaching Reward (Round 6: 乘法門控，徹底根除高空懸停刷分漏洞)
         cube_pos_w = self.scene["object"].data.root_com_pose_w[:, :3]
         ee_w = self.ee_frame.data.target_pos_w[..., 0, :]
         dist_xy = torch.norm(cube_pos_w[:, :2] - ee_w[:, :2], dim=1)
         dist_z = torch.abs(cube_pos_w[:, 2] - ee_w[:, 2])
         distance_ee_obj = torch.norm(cube_pos_w - ee_w, dim=1)
         reach_xy = 1.0 - torch.tanh(dist_xy / self.cfg.reward_settings.get("reaching_std", 0.08))
-        reach_z = 1.0 - torch.tanh(dist_z / self.cfg.reward_settings.get("reaching_z_std", 0.035))
-        rewards_dict["reaching"] = 0.5 * reach_xy + 0.5 * reach_z
+        reach_z = 1.0 - torch.tanh(dist_z / self.cfg.reward_settings.get("reaching_z_std", 0.08))
+        rewards_dict["reaching"] = reach_xy * reach_z
 
-        # 2. Close on Proximity (Round 5.5: 動作意圖即時閉爪引導，消除 0.66s 物理時延斷層)
+        # 2. Close on Proximity (Round 6: 動作意圖即時引導，0.2 快速飽和提供充足梯度)
         close_std = self.cfg.reward_settings.get("close_std", 0.08)
         close_proximity = torch.clamp(1.0 - (distance_ee_obj / close_std), 0.0, 1.0)
-        close_intent = torch.clamp(-self.actions[:, 6], 0.0, 1.0)
+        close_intent = torch.clamp(-self.actions[:, 6] / 0.2, 0.0, 1.0)
         rewards_dict["close"] = close_proximity * close_intent
 
-        # 3. Physical Grasp / Motor Stall (Round 5: 物理意志 + 速度停滯 雙核真夾持判定)
-        #    條件: (1) 距離接近方塊 (d < 0.06m) (2) 策略發力閉爪 (action <= -0.2)
+        # 3. Physical Grasp / Motor Stall (Round 6: 動作門檻對齊物理控制線 action <= 0.0)
+        #    條件: (1) 距離接近方塊 (d < 0.06m) (2) 策略發力閉爪 (action <= 0.0)
         #          (3) 馬達接觸停滯 (|vel| < 0.30) (4) 關節卡入阻擋角度 (0.25 < pos < 0.90)
         grasp_thresh = self.cfg.reward_settings.get("close_threshold", 0.06)
         is_in_grasp_range = (distance_ee_obj < grasp_thresh)
-        is_firm_close = (self.actions[:, 6] <= -0.2)
+        is_firm_close = (self.actions[:, 6] <= 0.0)
         gripper_pos = self.robot.data.joint_pos[:, self._gripper_joint_idx[0]]
         gripper_vel = self.robot.data.joint_vel[:, self._gripper_joint_idx[0]]
         is_motor_stalled = (gripper_vel.abs() < 0.30)
