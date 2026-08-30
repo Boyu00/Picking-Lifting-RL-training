@@ -361,8 +361,8 @@ class PickupPlaceLatchedObsEnv(PickupPlaceDirect0510Env):
         ee_jacobians = self.scene["robot"].root_physx_view.get_jacobians()[:, self.ee_body_idx, :, :]
         arm_jacobians = ee_jacobians[:, :, self._arm_joint_indices]
         
-        # 2. 進行 Jacobian 偏置修正 (根據 USD 精確量測，末端感測器相對於 gripper_link 有 X=-7mm, Z=7.5cm 的偏置)
-        offset_local = torch.tensor([-0.007, 0.0, 0.075], device=self.device).repeat(self.num_envs, 1)
+        # 2. 進行 Jacobian 偏置修正 (根據 USD 精確量測，末端感測器相對於 gripper_link 有 X=-7mm, Z=5.5cm 的指面抓取中心偏置)
+        offset_local = torch.tensor([-0.007, 0.0, 0.055], device=self.device).repeat(self.num_envs, 1)
         offset_w = quat_apply(ee_quat_w, offset_local)
         
         # 構造偏置向量的反對稱矩陣 (skew-symmetric matrix)

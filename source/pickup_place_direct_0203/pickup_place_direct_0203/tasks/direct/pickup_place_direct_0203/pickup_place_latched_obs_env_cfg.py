@@ -32,7 +32,7 @@ class PickupPlaceLatchedObsEnvCfg(PickupPlaceDirect0510EnvCfg):
             FrameTransformerCfg.FrameCfg(
                 prim_path="/World/envs/env_.*/Robot/gripper_link",
                 name="end_effector",
-                offset=OffsetCfg(pos=[-0.007, 0.0, 0.075]),
+                offset=OffsetCfg(pos=[-0.007, 0.0, 0.055]),
             ),
         ],
     )
@@ -85,9 +85,9 @@ class PickupPlaceLatchedObsEnvCfg(PickupPlaceDirect0510EnvCfg):
 
     # ===== 獎勵細部參數 (對齊 Franka 標準與 DexCube 尺寸) =====
     reward_settings = {
-        "reaching_std": 0.1,                    # 10.0cm 3D 歐氏空間直覺牽引尺度 (對齊 Franka 標準)
-        "close_std": 0.08,                      # 8.0cm 平滑連續接近衰減尺度 (消除硬門檻斷崖)
-        "close_threshold": 0.06,                # 6.0cm 實體夾持感知作用距離
+        "reaching_std": 0.05,                   # 5.0cm 陡峭 3D 歐氏空間牽引尺度 (消除高空懸停盲區，強效拉向桌面)
+        "close_std": 0.035,                     # 3.5cm 貼地方塊近距引導尺度 (徹底封殺 4cm 以上高空假夾白嫖)
+        "close_threshold": 0.045,               # 4.5cm 實體夾持作用半徑 (適配 DexCube)
         "lifting_min_height": 0.04,             # 對齊 Franka (4cm)
         "displacement_deadzone": 0.008,         # 8mm 夾爪對中滑移容差
         "goal_std": 0.6,                        # 對齊 Franka
