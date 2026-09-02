@@ -69,16 +69,16 @@ class PickupPlaceDirect0510EnvCfg(DirectRLEnvCfg):
     }
 
     # action/observation space
-    action_space = 7  # 6D Task Space (XYZ, RxRyRz) + 1 Gripper
-    # observation_space breakdown (49 dim):
+    action_space = 4  # 3D Task Space (XYZ) + 1 Gripper (Position-only IK for 5-DOF arm)
+    # observation_space breakdown (46 dim):
     # - relative_joint_pos: 6 (5 arm joints + 1 gripper)
     # - joint_vel: 6
     # - object_position: 3
     # - object_bbox_corners: 24
-    # - target_poses: 3
-    # - actions: 7
-    use_46_dim_obs = False
-    observation_space = 49 
+    # - rel_obj_to_goal: 3 (relative vector from object to target in robot frame)
+    # - actions: 4
+    use_46_dim_obs = True
+    observation_space = 46 
     state_space = 0
 
     # simulation settings
@@ -166,7 +166,8 @@ class PickupPlaceDirect0510EnvCfg(DirectRLEnvCfg):
     rew_scale_lift = 0.0
     rew_scale_lift_vel = 0.0
     rew_scale_close = 0.3  # 已調降
-    rew_scale_goal = 0.0
+    rew_scale_goal_coarse = 0.0
+    rew_scale_goal_mid = 0.0
     rew_scale_goal_fine = 0.0
     rew_scale_action = 0.0  # 被拿掉
     rew_scale_joint_vel = 0.0  # 被拿掉
@@ -190,11 +191,11 @@ class PickupPlaceDirect0510EnvCfg(DirectRLEnvCfg):
         "z": (0.3, 0.55),
     }
 
-    # Action Configuration (Task-Space Delta Control)
+    # Action Configuration (Task-Space Delta Control - Position-Only for 5-DOF arm)
     action_cfg = {
-        "ik_method": "dls",        # Differential IK method
-        "position_scale": 0.005,   # Max 0.5cm translation per step
-        "rotation_scale": 0.05,    # Max rotation per step
+        "ik_method": "dls",          # Differential IK method
+        "command_type": "position",  # Position-only IK (eliminates orientation fighting)
+        "position_scale": 0.005,     # Max 0.5cm translation per step
         "gripper_scale": 1.0,
     }
 
@@ -233,69 +234,78 @@ class PickupPlaceDirect0510EnvCfg(DirectRLEnvCfg):
         "max_distance_to_ee": 0.15,
     }
 
-    # Reward Settings
+    # Reward Settings (3-Stage Multi-Scale Funnel: Coarse 30cm -> Mid 8cm -> Fine 3cm)
     reward_settings = {
         "reaching_std": 0.15,
-        "lifting_min_height": 0.30,
+        "lifting_min_height": 0.20,
         "close_threshold": 0.08,
-        "goal_std": 0.4,
+        "goal_coarse_std": 0.30,        # 階段 1 (30cm 遠程粗導引)
+        "goal_mid_std": 0.08,           # 階段 2 (8cm 中程逼近導引)
+        "goal_fine_std": 0.03,          # 階段 3 (3cm 終端高精準鎖定)
         "goal_min_height": 0.10,
-        "goal_fine_std": 0.15,
-        "goal_fine_min_height": 0.10,
         "object_is_reached_threshold": 0.08,
+        "goal_tracking_threshold": 0.08,     # 8cm 粗追蹤門檻
+        "goal_precision_threshold": 0.03,    # 3cm 高精準門檻
     }
 
     # Curriculum Settings
     curriculum_settings = {
         "lifting_object": {
-            "target": 3.0, #0.4, #3.0
+            "target": 3.0,
             "threshold": 0.6, 
             "metric": "reaching_success", 
             "dependency": None
         },
         "lifting_object_velocity": {
-            "target": 0.8, #0.1, #0.8
+            "target": 0.8,
             "threshold": 0.6, 
             "metric": "reaching_success", 
             "dependency": None
         },
         "close_reward": {
-            "target": 0.3, # 已調降
+            "target": 0.3,
             "threshold": 0.6, 
             "metric": "reaching_success", 
             "dependency": None
         },
-        "object_goal_tracking": {
-            "target": 4.0, #0.1, #8.0
-            "threshold": 0.5, #0.6,#0.4, 
-            "metric": "lifting_success", 
-            "dependency": "lifting_object",#None#"lifting_object",
-            "increment": 0.25,  # Gradual warm-up
-            "interval": 50,    # Check success every 25 steps (fast check)
-            "increment_interval": 100, # But only increase weight every 100 steps (slow warm-up)
-        },
-        "object_goal_tracking_fine_grained": {
-            "target": 1.0, #0.2, #2.0
-            "threshold": 0.5, 
+        "object_goal_coarse": {
+            "target": 2.0,
+            "threshold": 0.5,
             "metric": "lifting_success", 
             "dependency": "lifting_object",
-            "increment": 0.025, 
+            "increment": 0.25,
             "interval": 50,
             "increment_interval": 100,
         },
-        # "action_rate" curriculum removed
-        # "joint_vel" curriculum removed
+        "object_goal_mid": {
+            "target": 2.0,
+            "threshold": 0.5,
+            "metric": "lifting_success", 
+            "dependency": "lifting_object",
+            "increment": 0.25,
+            "interval": 50,
+            "increment_interval": 100,
+        },
+        "object_goal_fine": {
+            "target": 2.0,
+            "threshold": 0.4,
+            "metric": "object_goal_tracking_success",
+            "dependency": "object_goal_mid",
+            "increment": 0.1,
+            "interval": 50,
+            "increment_interval": 100,
+        },
     }
 
     # Manual Curriculum Weight Initialization (for resuming training)
-    # If a term is present here, it will initialize with this value instead of 0.0
     # 直接從 reaching > 60% 解鎖的階段開始訓練 (跳過純 reaching 階段)
     curriculum_starting_weights = {
         "lifting_object": 3.0,
         "lifting_object_velocity": 0.8,
         "close_reward": 0.3,
-        "object_goal_tracking": 4.0,
-        "object_goal_tracking_fine_grained": 1.0
+        "object_goal_coarse": 2.0,
+        "object_goal_mid": 2.0,
+        "object_goal_fine": 2.0,
     }
 
     # Object Configuration

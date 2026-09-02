@@ -18,10 +18,11 @@ class EvalCriteria:
     lift_consecutive: int = 10          # steps (1.0s)
 
     # Goal Track: obj-target dist + height + grasp quality
-    goal_obj_target_dist: float = 0.08  # meters (goal_tracking_threshold in 0510 is 0.08)
-    goal_min_height: float = 0.10       # meters (goal_min_height in 0510 is 0.10)
-    goal_grasp_quality: float = 0.20    # 0~1
-    goal_consecutive: int = 10          # steps (1.0s)
+    goal_obj_target_dist: float = 0.08      # meters (coarse tracking threshold in 0510 is 0.08)
+    precision_obj_target_dist: float = 0.03 # meters (fine precision threshold in 0510 is 0.03)
+    goal_min_height: float = 0.10           # meters (goal_min_height in 0510 is 0.10)
+    goal_grasp_quality: float = 0.20        # 0~1
+    goal_consecutive: int = 10              # steps (1.0s)
 
 
 # ──────────────────────────────────────────────

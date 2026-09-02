@@ -68,7 +68,7 @@ class PickupPlaceDirect0510Env(DirectRLEnv):
             self.ee_body_idx = -1
 
         ik_cfg = DifferentialIKControllerCfg(
-            command_type="pose",
+            command_type=self.cfg.action_cfg.get("command_type", "position"),
             use_relative_mode=True,
             ik_method=self.cfg.action_cfg.get("ik_method", "dls"),
         )
@@ -82,8 +82,9 @@ class PickupPlaceDirect0510Env(DirectRLEnv):
             "lifting_object": 0.0,
             "lifting_object_velocity": 0.0,
             "close_reward": 0.0,
-            "object_goal_tracking": 0.0,
-            "object_goal_tracking_fine_grained": 0.0,
+            "object_goal_coarse": 0.0,
+            "object_goal_mid": 0.0,
+            "object_goal_fine": 0.0,
             "action_rate": 0.0,
             "joint_vel": 0.0,
         }
@@ -117,7 +118,8 @@ class PickupPlaceDirect0510Env(DirectRLEnv):
             "reward_lifting": torch.zeros(self.num_envs, device=self.device),
             "reward_lifting_vel": torch.zeros(self.num_envs, device=self.device),
             "reward_close": torch.zeros(self.num_envs, device=self.device),
-            "reward_goal": torch.zeros(self.num_envs, device=self.device),
+            "reward_goal_coarse": torch.zeros(self.num_envs, device=self.device),
+            "reward_goal_mid": torch.zeros(self.num_envs, device=self.device),
             "reward_goal_fine": torch.zeros(self.num_envs, device=self.device),
             "reward_action_rate": torch.zeros(self.num_envs, device=self.device),
             "reward_joint_vel": torch.zeros(self.num_envs, device=self.device),
@@ -133,10 +135,11 @@ class PickupPlaceDirect0510Env(DirectRLEnv):
         # [New] Population-Based Success Metric Buffer
         # Stores the latest episode outcome for each environment
         self.env_goal_success = torch.zeros(self.num_envs, device=self.device)
+        self.env_precision_success = torch.zeros(self.num_envs, device=self.device)
         self.env_lifting_success = torch.zeros(self.num_envs, device=self.device)
         self.env_reaching_success = torch.zeros(self.num_envs, device=self.device)
         
-        print(f"\n[Info] Environment initialized with {self._num_objects} possible object types")
+        print(f"\n[Info] Environment initialized with {self._num_objects} possible object types (Position-Only IK 4D Action, 46D Obs)")
 
         # Command generation
         self._generate_commands()
@@ -553,16 +556,12 @@ class PickupPlaceDirect0510Env(DirectRLEnv):
         self.actions = actions
 
     def _apply_action(self) -> None:
-        """Apply action via Differential IK and Binary Gripper."""
-        # actions shape: (num_envs, 7) -> [dx, dy, dz, drx, dry, drz, gripper]
-        
+        """Apply action via Differential IK (Position-only) and Binary Gripper."""
+        # actions shape: (num_envs, 4) -> [dx, dy, dz, gripper]
         position_scale = self.cfg.action_cfg.get("position_scale", 0.005)
-        rotation_scale = self.cfg.action_cfg.get("rotation_scale", 0.05)
         
-        # 1. Parsing Position and Rotation commands
-        ik_commands = torch.zeros((self.num_envs, 6), device=self.device)
-        ik_commands[:, :3] = self.actions[:, :3] * position_scale
-        ik_commands[:, 3:] = self.actions[:, 3:6] * rotation_scale
+        # 1. Parsing Position commands (3D)
+        ik_commands = self.actions[:, :3] * position_scale
         
         # Current ee pose for relative IK
         if hasattr(self, 'ee_frame'):
@@ -581,7 +580,6 @@ class PickupPlaceDirect0510Env(DirectRLEnv):
         arm_jacobians = ee_jacobians[:, :, self._arm_joint_indices]
         
         # 3. Compute target joint positions
-        # Provide the current TARGET arm joint positions to prevent gravity droop
         arm_joint_pos = self.scene["robot"].data.joint_pos_target[:, self._arm_joint_indices]
         joint_pos_desired = self.ik_controller.compute(
             ee_pos_w,
@@ -590,8 +588,8 @@ class PickupPlaceDirect0510Env(DirectRLEnv):
             arm_joint_pos
         )
         
-        # 4. Binary Gripper Control
-        gripper_action = self.actions[:, 6]
+        # 4. Binary Gripper Control (action index 3)
+        gripper_action = self.actions[:, 3]
         # > 0 means Open (0.0), <= 0 means Close (1.57)
         gripper_target = torch.where(gripper_action > 0.0, torch.zeros_like(gripper_action), torch.full_like(gripper_action, 1.57))
         
@@ -600,29 +598,23 @@ class PickupPlaceDirect0510Env(DirectRLEnv):
         gripper_target = torch.clamp(gripper_target, 0.0, 1.57)
 
         # 5. Combine and apply
-        # joint_pos_desired now strictly contains the 5 arm joints
         targets = torch.cat([joint_pos_desired, gripper_target.unsqueeze(1)], dim=1)
         self.robot.set_joint_position_target(targets, joint_ids=list(self._arm_joint_indices) + list(self._gripper_joint_idx))
 
     def _get_observations(self) -> dict:
-        """Collect observations (state-based, no vision)."""
-        # Joint positions/velocities (Relative to default)
-        if hasattr(self.cfg, "use_46_dim_obs") and self.cfg.use_46_dim_obs:
-            # Previous incorrect version: missing gripper pos and vel (5 + 5 = 10 instead of 12)
-            joint_indices = list(self._arm_joint_indices)
-        else:
-            joint_indices = list(self._arm_joint_indices) + list(self._gripper_joint_idx)
+        """Collect observations (state-based with relative goal vector, 46 dims)."""
+        joint_indices = list(self._arm_joint_indices) + list(self._gripper_joint_idx)
             
         jpos = self.joint_pos[:, joint_indices] - self.robot.data.default_joint_pos[:, joint_indices]
         jvel = self.joint_vel[:, joint_indices] - self.robot.data.default_joint_vel[:, joint_indices]
 
-        # Object position in robot frame
+        # Object position in robot frame (3 dims)
         obj_pos = mdp_obs.object_position_in_robot_root_frame(self, object_cfg=SceneEntityCfg("object"))
 
-        # Bounding box corners
+        # Bounding box corners (24 dims)
         bbox = mdp_obs.object_bbox_corners_relative(self, object_cfg=SceneEntityCfg("object"))
 
-        # Target position (Fix: Convert from Env Frame -> Robot Frame)
+        # Target position in robot frame
         # 1. Env Frame -> World Frame
         target_pos_w = self.target_poses + self.scene.env_origins
         # 2. World Frame -> Robot Frame (Ego-centric)
@@ -631,33 +623,26 @@ class PickupPlaceDirect0510Env(DirectRLEnv):
             self.scene["robot"].data.root_quat_w, 
             target_pos_w
         )
-        target = target_in_robot
+        # Relative vector from object to target in robot frame (3 dims)
+        rel_obj_to_goal = target_in_robot - obj_pos
 
-        # Add Noise (if corruption enabled, typically checked via self.cfg.observation_noise_scale > 0)
-        # Using simple additive Gaussian noise logic similar to ManagerBasedEnv defaults
+        # Add Noise (if corruption enabled)
         if self.cfg.observation_noise_scale > 0.0:
             noise_scale = self.cfg.observation_noise_scale
             jpos += torch.randn_like(jpos) * 0.0001 * noise_scale
             jvel += torch.randn_like(jvel) * 0.001 * noise_scale
             obj_pos += torch.randn_like(obj_pos) * 0.001 * noise_scale
-            # bbox is derived from object pos/rot, technically should add noise to source or result.
-            # Here adding to result for simplicity matching 'object_bbox' noise
             bbox += torch.randn_like(bbox) * 0.001 * noise_scale
-            # target typically noiseless in obs, but 'target_object_position' might have noise. 
-            # Keeping target clean for now as it's a command.
+            rel_obj_to_goal += torch.randn_like(rel_obj_to_goal) * 0.001 * noise_scale
 
-        # NOTE: Target marker visualization is now updated only in _reset_scene_elements
-        # This avoids excessive position updates every step and makes debugging clearer
-        # by showing the target only at episode reset time
-
-        # Combine all
+        # Combine all (46 dims: 6 + 6 + 3 + 24 + 3 + 4)
         obs = torch.cat(
             [
                 jpos.view(self.num_envs, -1),
                 jvel.view(self.num_envs, -1),
                 obj_pos,
                 bbox,
-                target,
+                rel_obj_to_goal,
                 self.actions,
             ],
             dim=1,
@@ -683,15 +668,28 @@ class PickupPlaceDirect0510Env(DirectRLEnv):
         # Gripper closing phase
         rewards_dict["close"] = mdp_rewards.gripper_open_close_phases(self, joint_name="r_joint", close_threshold=self.cfg.reward_settings["close_threshold"])
 
-        # Goal tracking (DIRECT WORKFLOW FIX: Use target_poses instead of command_manager)
-        # CRITICAL FIX: Add env_origins to target_poses to convert to world frame
+        # Goal tracking: 3-Stage Multi-Scale Funnel
         target_pos_w = self.target_poses + self.scene.env_origins
-        rewards_dict["goal"] = mdp_rewards.object_goal_distance(
-            self, std=self.cfg.reward_settings["goal_std"], minimal_height=self.cfg.reward_settings["goal_min_height"], target_pos=target_pos_w, object_cfg=SceneEntityCfg("object")
+        dist = mdp_rewards.object_goal_distance_real(
+            self, target_pos=target_pos_w, object_cfg=SceneEntityCfg("object")
         )
-        rewards_dict["goal_fine"] = mdp_rewards.object_goal_distance(
-            self, std=self.cfg.reward_settings["goal_fine_std"], minimal_height=self.cfg.reward_settings["goal_fine_min_height"], target_pos=target_pos_w, object_cfg=SceneEntityCfg("object")
-        )
+        
+        # Soft lifting gating: smoothly scales from 0 to 1 as object lifts off ground
+        object_bottom_z = mdp_rewards._get_object_bottom_z(self, SceneEntityCfg("object"))
+        lift_height = object_bottom_z - 0.0
+        h_min = self.cfg.reward_settings["goal_min_height"]
+        lift_weight = torch.clamp(lift_height / (h_min + 1e-6), min=0.0, max=1.0)
+        is_settled = (self.episode_length_buf > 3).float()
+        active_lift_weight = lift_weight * is_settled
+
+        # 3-Stage Funnel Scales
+        std_coarse = self.cfg.reward_settings.get("goal_coarse_std", 0.30)
+        std_mid = self.cfg.reward_settings.get("goal_mid_std", 0.08)
+        std_fine = self.cfg.reward_settings.get("goal_fine_std", 0.03)
+
+        rewards_dict["goal_coarse"] = (1.0 - torch.tanh(dist / std_coarse)) * active_lift_weight
+        rewards_dict["goal_mid"] = (1.0 - torch.tanh(dist / std_mid)) * active_lift_weight
+        rewards_dict["goal_fine"] = (1.0 - torch.tanh(dist / std_fine)) * active_lift_weight
 
         # Action rate penalty
         rewards_dict["action_rate"] = mdp_rewards.action_rate_l2(self)
@@ -707,8 +705,9 @@ class PickupPlaceDirect0510Env(DirectRLEnv):
         w_lift = self._curriculum_term_weights.get("lifting_object", self.cfg.rew_scale_lift)
         w_lift_vel = self._curriculum_term_weights.get("lifting_object_velocity", self.cfg.rew_scale_lift_vel)
         w_close = self._curriculum_term_weights.get("close_reward", self.cfg.rew_scale_close)
-        w_goal = self._curriculum_term_weights.get("object_goal_tracking", self.cfg.rew_scale_goal)
-        w_goal_fine = self._curriculum_term_weights.get("object_goal_tracking_fine_grained", self.cfg.rew_scale_goal_fine)
+        w_goal_coarse = self._curriculum_term_weights.get("object_goal_coarse", getattr(self.cfg, "rew_scale_goal_coarse", 2.0))
+        w_goal_mid = self._curriculum_term_weights.get("object_goal_mid", getattr(self.cfg, "rew_scale_goal_mid", 2.0))
+        w_goal_fine = self._curriculum_term_weights.get("object_goal_fine", getattr(self.cfg, "rew_scale_goal_fine", 2.0))
         w_action = self._curriculum_term_weights.get("action_rate", self.cfg.rew_scale_action)
         w_joint = self._curriculum_term_weights.get("joint_vel", self.cfg.rew_scale_joint_vel)
         w_torques = self._curriculum_term_weights.get("torques", getattr(self.cfg, "rew_scale_torques", 0.0))
@@ -719,7 +718,8 @@ class PickupPlaceDirect0510Env(DirectRLEnv):
             + w_lift * rewards_dict["lifting"]
             + w_lift_vel * rewards_dict["lifting_vel"]
             + w_close * rewards_dict["close"]
-            + w_goal * rewards_dict["goal"]
+            + w_goal_coarse * rewards_dict["goal_coarse"]
+            + w_goal_mid * rewards_dict["goal_mid"]
             + w_goal_fine * rewards_dict["goal_fine"]
             + w_action * rewards_dict["action_rate"]
             + w_joint * rewards_dict["joint_vel"]
@@ -727,7 +727,6 @@ class PickupPlaceDirect0510Env(DirectRLEnv):
         )
         
         # Accumulate Episode Sums (ISSUE FIX #6)
-        # Instead of logging step averages, we accumulate total rewards and log them on episode completion
         if w_reach > 0.0:
             self.episode_sums["reward_reaching"] += w_reach * rewards_dict["reaching"]
         if w_lift > 0.0:
@@ -736,8 +735,10 @@ class PickupPlaceDirect0510Env(DirectRLEnv):
             self.episode_sums["reward_lifting_vel"] += w_lift_vel * rewards_dict["lifting_vel"]
         if w_close > 0.0:
             self.episode_sums["reward_close"] += w_close * rewards_dict["close"]
-        if w_goal > 0.0:
-            self.episode_sums["reward_goal"] += w_goal * rewards_dict["goal"]
+        if w_goal_coarse > 0.0:
+            self.episode_sums["reward_goal_coarse"] += w_goal_coarse * rewards_dict["goal_coarse"]
+        if w_goal_mid > 0.0:
+            self.episode_sums["reward_goal_mid"] += w_goal_mid * rewards_dict["goal_mid"]
         if w_goal_fine > 0.0:
             self.episode_sums["reward_goal_fine"] += w_goal_fine * rewards_dict["goal_fine"]
         if w_action != 0.0:
@@ -751,9 +752,7 @@ class PickupPlaceDirect0510Env(DirectRLEnv):
         # 1. Is end-effector close to object?
         is_reached = mdp_rewards.object_is_reached(self, threshold=self.cfg.reward_settings["object_is_reached_threshold"], object_cfg=SceneEntityCfg("object"))
         
-        
         # 2. Is object robustly lifted? (Height > 0.05m AND Dist < 0.15m to EE)
-        # Using new stable check to filter out "throwing", "balancing", and penetration
         is_lifted = mdp_rewards.check_stable_lifting_success(
             self, 
             min_height=self.cfg.success_criteria["min_height"],
@@ -767,30 +766,17 @@ class PickupPlaceDirect0510Env(DirectRLEnv):
         )
         
         # Update Anytime Consecutive Success Tracker
-        # 1. Update counter: increment if lifted, else reset to 0
         self.consecutive_success_counter = (self.consecutive_success_counter + 1) * is_lifted.long()
-        
-        # 2. Check strict success: held for N steps
         is_success_now = (self.consecutive_success_counter >= self.consecutive_success_threshold)
-        
-        # 3. Check time validity: ignore initial N steps of the episode
-        # We need episode length. self.episode_length_buf tracks current step count
         is_valid_time = (self.episode_length_buf > self.initial_ignore_steps)
-        
-        # 4. Latch success: marked as successful if valid condition met ANY time
         self.episode_max_success = torch.maximum(self.episode_max_success, (is_success_now & is_valid_time).float())
 
-        # 3. Is object at target position? (direct workflow: use target_poses)
-        # For Direct workflow, we use target_pos parameter in object_goal_is_tracked
-        # CRITICAL FIX: Add env_origins here too
-        # Note: target_pos_w was computed above in this method
-        is_tracked = mdp_rewards.object_goal_is_tracked(
-            self, 
-            threshold=self.cfg.reward_settings.get("goal_tracking_threshold", 0.08), 
-            minimal_height=self.cfg.reward_settings["goal_min_height"], 
-            target_pos=target_pos_w, 
-            object_cfg=SceneEntityCfg("object")
-        )
+        # 3. Dual-Threshold Tracking check (8cm Coarse & 3cm Fine Precision)
+        thresh_8cm = self.cfg.reward_settings.get("goal_tracking_threshold", 0.08)
+        thresh_3cm = self.cfg.reward_settings.get("goal_precision_threshold", 0.03)
+        is_high_enough = (object_bottom_z > h_min)
+        is_tracked_8cm = ((dist < thresh_8cm) & is_high_enough & is_settled.bool()).float()
+        is_tracked_3cm = ((dist < thresh_3cm) & is_high_enough & is_settled.bool()).float()
 
         # Store metrics in extras for curriculum and logging
         if not hasattr(self, "extras"):
@@ -798,17 +784,12 @@ class PickupPlaceDirect0510Env(DirectRLEnv):
         if "episode" not in self.extras:
             self.extras["episode"] = {}
 
-        # Store metrics: reaching, lifting, and goal tracking success
-        # OPTIMIZATION: Removed .item() to prevent CPU-GPU sync every step
+        # Store metrics
         self.extras["episode"]["reaching_success"] = torch.mean(is_reached.float())
         self.extras["episode"]["lifting_success"] = torch.mean(is_lifted.float())
-        
-        # DIRECT WORKFLOW FIX: object_goal_tracking_success now correctly uses target_poses
-        self.extras["episode"]["object_goal_tracking_success"] = torch.mean(is_tracked.float())
+        self.extras["episode"]["object_goal_tracking_success"] = torch.mean(is_tracked_8cm)
+        self.extras["episode"]["object_goal_precision_success"] = torch.mean(is_tracked_3cm)
         self.extras["episode"]["episode_lifting_success"] = self.current_rolling_success
-        
-        # Calculate and monitor the mean lift height of the object across all envs
-        object_bottom_z = mdp_rewards._get_object_bottom_z(self, SceneEntityCfg("object"))
         self.extras["episode"]["mean_lift_height"] = torch.mean(object_bottom_z).item()
         
         # (Legacy per-step logging removed in favor of accumulated sums in _reset_idx)
@@ -861,8 +842,9 @@ class PickupPlaceDirect0510Env(DirectRLEnv):
                 # but do merge all per-step metrics from _get_rewards()
                 if key not in extras["log"]["episode"] or key in [
                     "reaching_success", "lifting_success", "object_goal_tracking_success",
+                    "object_goal_precision_success",
                     "reward_reaching", "reward_lifting", "reward_lifting_vel", 
-                    "reward_close", "reward_goal", "reward_goal_fine",
+                    "reward_close", "reward_goal_coarse", "reward_goal_mid", "reward_goal_fine",
                     "reward_action_rate", "reward_joint_vel", "mean_lift_height"
                 ]:
                     extras["log"]["episode"][key] = value
@@ -968,57 +950,32 @@ class PickupPlaceDirect0510Env(DirectRLEnv):
                 ee_frame_cfg=SceneEntityCfg("ee_frame"),
                 joint_name="r_joint"
             )
-            # 3. Tracked check (DIRECT WORKFLOW FIX: Use object_goal_is_tracked with target_poses)
-            # This should match the computation in _get_rewards() for consistency
+            # 3. Tracked check (8cm Coarse & 3cm Fine Precision)
             target_pos_w = self.target_poses + self.scene.env_origins
-            
-            # Use config values for tracking success check (Issue: Hardcoded 0.03 was too strict)
-            # Using 'object_is_reached_threshold' (0.08) or 'goal_std' (0.3) logic? 
-            # Ideally, tracking success should be related to 'goal' reward parameters or a specific success criteria.
-            # Manager-based commonly uses 0.02 ~ 0.05. 
-            # User reported 0.03 is too strict (visually wiggles).
-            # Let's use a dedicated success threshold from config if available, or relax it.
-            # User added reward_settings["goal_std"]=0.3, goal_min_height=0.20.
-            # But for binary success, we need a hard threshold. 
-            # Let's look for "tracking_success_threshold" or reuse 'object_is_reached_threshold' (0.08) if appropriate, 
-            # or add a new config. 
-            # Given the report, 0.08 (8cm) seems reasonable for "reached" but "tracked" usually implies finer.
-            # However, if visual is 80-90% and log is 10%, relaxing to 0.08 or 0.10 is likely needed.
-            # Let's use 0.10 (10cm) temporarily or add it to config. 
-            # BETTER: Use self.cfg.reward_settings["object_is_reached_threshold"] (0.08) as a baseline for "close enough to goal".
-            
-            # Actually, let's use the same logic as _get_rewards where we might want consistent definition.
-            # But _get_rewards uses continuous tanh.
-            
-            # Let's use 0.10m (10cm) as a robust tracking threshold for now, or use a new config key.
-            # The user has 'goal_fine_std' = 0.05.
-            # Let's use 0.08 (same as reaching threshold) for consistency.
-            
-            is_tracked = mdp_rewards.object_goal_is_tracked(
-                self, 
-                threshold=self.cfg.reward_settings.get("goal_tracking_threshold", 0.08), 
-                minimal_height=self.cfg.reward_settings["goal_min_height"], 
-                target_pos=target_pos_w, 
-                object_cfg=SceneEntityCfg("object")
+            dist_reset = mdp_rewards.object_goal_distance_real(
+                self, target_pos=target_pos_w, object_cfg=SceneEntityCfg("object")
             )
+            object_bottom_z_reset = mdp_rewards._get_object_bottom_z(self, SceneEntityCfg("object"))
+            h_min_reset = self.cfg.reward_settings["goal_min_height"]
+            is_high_enough_reset = (object_bottom_z_reset > h_min_reset)
+            is_settled_reset = (self.episode_length_buf > 3)
+
+            thresh_8cm = self.cfg.reward_settings.get("goal_tracking_threshold", 0.08)
+            thresh_3cm = self.cfg.reward_settings.get("goal_precision_threshold", 0.03)
+
+            is_tracked_8cm = ((dist_reset < thresh_8cm) & is_high_enough_reset & is_settled_reset).float()
+            is_tracked_3cm = ((dist_reset < thresh_3cm) & is_high_enough_reset & is_settled_reset).float()
             
-            # Compute episode-level success rates before resetting buffers
-            # [OLD] Batch Average (only resetting envs)
-            # reach_rate = torch.mean(is_reached[env_ids].float()).item()
-            # lift_rate = torch.mean(is_lifted[env_ids].float()).item()
-            # track_rate = torch.mean(is_tracked[env_ids].float()).item()
-            
-            # [NEW] Population-Based Average
-            # 1. Update the buffer with the latest results from the resetting environments
+            # Update population buffer
             self.env_reaching_success[env_ids] = is_reached[env_ids].float()
             self.env_lifting_success[env_ids] = is_lifted[env_ids].float()
-            self.env_goal_success[env_ids] = is_tracked[env_ids].float()
+            self.env_goal_success[env_ids] = is_tracked_8cm[env_ids].float()
+            self.env_precision_success[env_ids] = is_tracked_3cm[env_ids].float()
             
-            # 2. Compute the mean across the ENTIRE population (all envs)
-            # OPTIMIZATION: Removed .item() to prevent CPU-GPU sync
             reach_rate = torch.mean(self.env_reaching_success)
             lift_rate = torch.mean(self.env_lifting_success)
             track_rate = torch.mean(self.env_goal_success)
+            precision_rate = torch.mean(self.env_precision_success)
             
             # Use latched anytime success for this episode
             finished_successes = self.episode_max_success[env_ids]
@@ -1027,11 +984,12 @@ class PickupPlaceDirect0510Env(DirectRLEnv):
             self.consecutive_success_counter[env_ids] = 0
             self.episode_max_success[env_ids] = 0.0
             
-            # Store in pending logs for step() method to write to tensorboard (ISSUE FIX #4)
+            # Store in pending logs for step() method to write to tensorboard
             self._pending_reward_logs = {
                 "reaching_success": reach_rate,
                 "lifting_success": lift_rate,
                 "object_goal_tracking_success": track_rate,
+                "object_goal_precision_success": precision_rate,
             }
 
             # ISSUE FIX #6: Log Episode Reward Sums (Total Return) and Mean Step Rewards
@@ -1083,6 +1041,7 @@ class PickupPlaceDirect0510Env(DirectRLEnv):
                 "reaching_success": reach_rate,
                 "lifting_success": lift_rate,
                 "object_goal_tracking_success": track_rate,
+                "object_goal_precision_success": precision_rate,
                 "episode_lifting_success": self.current_rolling_success,
             })
             
