@@ -215,6 +215,30 @@ class PickupPlaceDirect0510Env(DirectRLEnv):
             },
         )
         self.target_marker = VisualizationMarkers(target_marker_cfg)
+
+        # Latch marker (Cyan - 0.0, 1.0, 1.0)
+        latch_marker_cfg = VisualizationMarkersCfg(
+            prim_path="/Visuals/LatchMarker",
+            markers={
+                "default": SphereCfg(
+                    radius=0.015,
+                    visual_material=PreviewSurfaceCfg(diffuse_color=(0.0, 1.0, 1.0)),
+                )
+            },
+        )
+        self.latch_marker = VisualizationMarkers(latch_marker_cfg)
+
+        # End Effector marker (Yellow - 1.0, 1.0, 0.0)
+        ee_marker_cfg = VisualizationMarkersCfg(
+            prim_path="/Visuals/EEMarker",
+            markers={
+                "default": SphereCfg(
+                    radius=0.015,
+                    visual_material=PreviewSurfaceCfg(diffuse_color=(1.0, 1.0, 0.0)),
+                )
+            },
+        )
+        self.ee_marker = VisualizationMarkers(ee_marker_cfg)
     
     def _setup_bbox_visualizer(self):
         """Setup bounding box corner visualization (ISSUE FIX #3).
@@ -336,6 +360,23 @@ class PickupPlaceDirect0510Env(DirectRLEnv):
                 # Get CoM position in world frame
                 com_pos_w = object_entity.data.root_com_pose_w[:, :3]
                 self.com_marker.visualize(translations=com_pos_w)
+            except Exception:
+                pass
+
+        # Latch position marker (cyan sphere)
+        if settings.get("latch", True) and hasattr(self, "latch_marker") and hasattr(self, "latched_object_pos"):
+            try:
+                robot = self.scene["robot"]
+                latch_pos_w = robot.data.root_pos_w + quat_apply(robot.data.root_quat_w, self.latched_object_pos)
+                self.latch_marker.visualize(translations=latch_pos_w)
+            except Exception:
+                pass
+
+        # End Effector position marker (yellow sphere)
+        if settings.get("ee", True) and hasattr(self, "ee_marker") and hasattr(self, "ee_frame"):
+            try:
+                ee_pos_w = self.ee_frame.data.target_pos_w[..., 0, :]
+                self.ee_marker.visualize(translations=ee_pos_w)
             except Exception:
                 pass
 

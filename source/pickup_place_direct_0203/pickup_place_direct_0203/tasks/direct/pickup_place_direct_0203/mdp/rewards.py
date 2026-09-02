@@ -511,3 +511,52 @@ def object_in_view_reward(
     total_reward = focus_score * is_visible.float()
     
     return total_reward
+
+
+def pre_grasp_hover_reward(
+    env: "DirectRLEnv",
+    std: float = 0.05,
+    hover_height: float = 0.04,
+    object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
+    ee_frame_cfg: SceneEntityCfg = SceneEntityCfg("ee_frame"),
+) -> torch.Tensor:
+    """Encourages the end-effector to hover directly above the object.
+    
+    Args:
+        env: The environment.
+        std: Tanh scaling for horizontal distance.
+        hover_height: Desired vertical height (in meters) of end-effector above the object COM.
+        object_cfg: Target object configuration.
+        ee_frame_cfg: End-effector frame configuration.
+    """
+    ee_pos = env.scene[ee_frame_cfg.name].data.target_pos_w[..., 0, :]
+    obj_pos = env.scene[object_cfg.name].data.root_com_pose_w[:, :3]
+    
+    # 1. Horizontal alignment reward (XY distance)
+    horizontal_dist = torch.norm(ee_pos[:, :2] - obj_pos[:, :2], dim=1)
+    horizontal_reward = 1.0 - torch.tanh(horizontal_dist / std)
+    
+    # 2. Vertical height reward (Gaussian peaked at hover_height)
+    height_above = ee_pos[:, 2] - obj_pos[:, 2]
+    # Gaussian: peak at hover_height, sigma = 0.02
+    height_reward = torch.exp(-0.5 * ((height_above - hover_height) / 0.02) ** 2)
+    
+    return horizontal_reward * height_reward
+
+
+def object_displacement_penalty(
+    env: "DirectRLEnv",
+    object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
+) -> torch.Tensor:
+    """Penalize object displacement from its initial spawn position (horizontal XY plane only)."""
+    if not hasattr(env, "object_initial_pos_w"):
+        return torch.zeros(env.num_envs, device=env.device)
+        
+    current_pos_w = env.scene[object_cfg.name].data.root_com_pose_w[:, :3]
+    initial_pos_w = env.object_initial_pos_w
+    
+    # Compute horizontal (XY) displacement to allow vertical lifting without penalty
+    displacement_xy = torch.norm(current_pos_w[:, :2] - initial_pos_w[:, :2], dim=1)
+    
+    # soft tanh penalty: 2cm -> tanh(1.0) = ~0.76 penalty, 5cm -> tanh(2.5) = ~0.99 penalty
+    return torch.tanh(displacement_xy / 0.02)
