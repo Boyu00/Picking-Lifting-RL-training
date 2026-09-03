@@ -39,7 +39,7 @@ class PPORunnerCfg(RslRlOnPolicyRunnerCfg):
         value_loss_coef=1.0,#2.0,          # skrl: value_loss_scale
         use_clipped_value_loss=True,  # skrl: clip_predicted_values
         clip_param=0.2,               # skrl: ratio_clip
-        entropy_coef=0.003,           # 從 0.01 降到 0.001
+        entropy_coef=0.008,           # 從 0.003 調升至 0.008 防止噪聲過早坍縮
         num_learning_epochs=8,        # skrl: learning_epochs
         num_mini_batches=4,           # skrl: mini_batches
         learning_rate=1.0e-4,         # skrl: learning_rate (注意: 這是 1e-4)

@@ -269,7 +269,7 @@ class PickupPlaceDirect0510EnvCfg(DirectRLEnvCfg):
             "dependency": None
         },
         "object_goal_coarse": {
-            "target": 2.0,
+            "target": 7.0,
             "threshold": 0.5,
             "metric": "lifting_success", 
             "dependency": "lifting_object",
@@ -278,7 +278,7 @@ class PickupPlaceDirect0510EnvCfg(DirectRLEnvCfg):
             "increment_interval": 100,
         },
         "object_goal_mid": {
-            "target": 2.0,
+            "target": 5.0,
             "threshold": 0.5,
             "metric": "lifting_success", 
             "dependency": "lifting_object",
@@ -287,7 +287,7 @@ class PickupPlaceDirect0510EnvCfg(DirectRLEnvCfg):
             "increment_interval": 100,
         },
         "object_goal_fine": {
-            "target": 2.0,
+            "target": 5.0,
             "threshold": 0.4,
             "metric": "object_goal_tracking_success",
             "dependency": "object_goal_mid",
@@ -303,9 +303,9 @@ class PickupPlaceDirect0510EnvCfg(DirectRLEnvCfg):
         "lifting_object": 3.0,
         "lifting_object_velocity": 0.8,
         "close_reward": 0.3,
-        "object_goal_coarse": 2.0,
-        "object_goal_mid": 2.0,
-        "object_goal_fine": 2.0,
+        "object_goal_coarse": 7.0,
+        "object_goal_mid": 5.0,
+        "object_goal_fine": 5.0,
     }
 
     # Object Configuration
