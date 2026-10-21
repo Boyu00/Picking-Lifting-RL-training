@@ -1,135 +1,119 @@
-# Template for Isaac Lab Projects
+# Picking-Lifting RL Training
 
-## Overview
+以 [Isaac Lab](https://github.com/isaac-sim/IsaacLab)（Direct workflow）建立的強化學習環境，訓練 JetRover 機械手臂抓取並舉起桌上的物體，再移動到隨機目標點。使用 RSL-RL 的 PPO 訓練。
 
-This project/repository serves as a template for building projects or extensions based on Isaac Lab.
-It allows you to develop in an isolated environment, outside of the core Isaac Lab repository.
+> 2026-06-30 之前的版本（7D DeltaIK 動作與當時的評估結果）保存在 [`before-0630`](../../tree/before-0630) branch。
 
-**Key Features:**
+## 專案架構
 
-- `Isolation` Work outside the core Isaac Lab repository, ensuring that your development efforts remain self-contained.
-- `Flexibility` This template is set up to allow your code to be run as an extension in Omniverse.
+```
+.
+├── scripts/rsl_rl/
+│   ├── train_0510.py, play_0510.py  # 0510 環境訓練 / 推論
+│   ├── eval_config_0510.py          # 評估設定：物體分組、成功判定
+│   ├── eval_analysis_0510.py        # 評估結果統計（依物體、形狀、質量、位置、失敗原因）
+│   ├── train.py, play.py            # 通用版，含 early stopping 與訓練健康監控
+│   └── cli_args.py                  # RSL-RL 共用參數
+└── source/pickup_place_direct_0203/       # Isaac Lab extension（pip install -e）
+    └── pickup_place_direct_0203/tasks/direct/pickup_place_direct_0203/
+        ├── __init__.py                          # gym 環境註冊
+        ├── jetrover.py                          # JetRover ArticulationCfg
+        ├── pickup_place_direct_0510_env_cfg.py  # 0510 環境設定：場景、物體、獎勵、課程、隨機化
+        ├── pickup_place_direct_0510_env.py      # 0510 環境本體：IK 動作、觀測、獎勵、重置
+        ├── pickup_place_latched_obs_env*.py     # 鎖存觀測版本（actor 只看到初始物體位置）
+        ├── franka_cube_lift_direct_env*.py      # Franka 對照環境
+        ├── mdp/                                 # rewards / observations / terminations / curriculum
+        └── agents/rsl_rl_ppo_*_cfg.py           # 各環境的 PPO 超參數
+```
 
-**Keywords:** extension, template, isaaclab
+## 環境：`Template-Pickup-Place-Direct-0510-v0`
 
-## Installation
+| 項目 | 內容 |
+|---|---|
+| 機器人 | JetRover，5 軸手臂 + 二值夾爪 |
+| 動作（4 維） | 末端執行器位置增量（dx, dy, dz），經 Differential IK（DLS）轉成關節目標；第 4 維控制夾爪開/關 |
+| 觀測（46 維） | 關節位置與速度、物體位置、物體 bbox 8 個角點、物體到目標的相對向量、上一步動作 |
+| 物體 | 從 ObjectFolder 隨機挑選 15 種（杯子、餐具、瓶罐、盤子等） |
+| 隨機化 | 物體種類、質量、yaw、依材質設定的靜/動摩擦力、目標位置 |
+| 獎勵 | reaching → close gripper → lifting，舉起後再以 coarse / mid / fine 三層 goal tracking 引導到目標點 |
+| 終止條件 | 物體離開工作區，或達到 episode 時長（10 s） |
 
-- Install Isaac Lab by following the [installation guide](https://isaac-sim.github.io/IsaacLab/main/source/setup/installation/index.html).
-  We recommend using the conda or uv installation as it simplifies calling Python scripts from the terminal.
+## 實驗結果
 
-- Clone or copy this project/repository separately from the Isaac Lab installation (i.e. outside the `IsaacLab` directory):
+評估模型為 2026-09-03 訓練的 `model_3750.pt`，於 2026-09-04 評估：單一環境、seed 42、關閉觀測雜訊，每種物體 20 次。
 
-- Using a python interpreter that has Isaac Lab installed, install the library in editable mode using:
+- **Train**：訓練時使用過的 12 種物體，共 240 次
+- **Test**：訓練時沒看過的 12 種物體（ObjectFolder 21、29，以及 10 種垃圾類物體，例如蘋果、香蕉、鋁罐、寶特瓶、蛋盒），共 240 次
 
-    ```bash
-    # use 'PATH_TO_isaaclab.sh|bat -p' instead of 'python' if Isaac Lab is not installed in Python venv or conda
-    python -m pip install -e source/pickup_place_direct_0203
+成功判定（皆需連續維持）：
 
-- Verify that the extension is correctly installed by:
+| 階段 | 條件 |
+|---|---|
+| Reach | 夾爪與物體 bbox 距離 < 5 cm，連續 5 步 |
+| Lift | 物體離地 ≥ 6 cm、grasp quality ≥ 0.2、與夾爪距離 ≤ 12 cm，連續 10 步 |
+| Goal | 物體與目標點距離 < 8 cm、高度 ≥ 10 cm，連續 10 步 |
+| Precision | 同 Goal，但距離 < 3 cm |
 
-    - Listing the available tasks:
+### 整體成功率
 
-        Note: It the task name changes, it may be necessary to update the search pattern `"Template-"`
-        (in the `scripts/list_envs.py` file) so that it can be listed.
+| 組別 | 次數 | Reach | Lift | Goal | Precision |
+|---|---|---|---|---|---|
+| Train | 240 | 100.0% | 87.9% | 79.2% | 60.0% |
+| Test | 240 | 99.6% | 70.4% | 37.1% | 19.6% |
+| 合計 | 480 | 99.8% | 79.2% | 58.1% | 39.8% |
 
-        ```bash
-        # use 'FULL_PATH_TO_isaaclab.sh|bat -p' instead of 'python' if Isaac Lab is not installed in Python venv or conda
-        python scripts/list_envs.py
-        ```
+### 依物體形狀
 
-    - Running a task:
+| 形狀 | 次數 | Reach | Lift | Goal | Precision |
+|---|---|---|---|---|---|
+| 杯碗類 | 80 | 100.0% | 98.8% | 97.5% | 97.5% |
+| 扁長類（餐具、筆） | 100 | 100.0% | 76.0% | 74.0% | 65.0% |
+| 圓柱類（瓶罐） | 120 | 99.2% | 75.8% | 42.5% | 12.5% |
+| 不規則 | 180 | 100.0% | 74.4% | 42.2% | 18.3% |
 
-        ```bash
-        # use 'FULL_PATH_TO_isaaclab.sh|bat -p' instead of 'python' if Isaac Lab is not installed in Python venv or conda
-        python scripts/<RL_LIBRARY>/train.py --task=<TASK_NAME>
-        ```
+### 失敗原因
 
-    - Running a task with dummy agents:
+| 類型 | Train | Test | 合計 |
+|---|---|---|---|
+| 成功 | 190 (79.2%) | 89 (37.1%) | 279 (58.1%) |
+| 舉起後沒送到目標（transport_fail） | 21 (8.8%) | 80 (33.3%) | 101 (21.0%) |
+| 沒抓起來（grasp_fail） | 23 (9.6%) | 63 (26.2%) | 86 (17.9%) |
+| 舉起後掉落（drop_after_lift） | 6 (2.5%) | 7 (2.9%) | 13 (2.7%) |
+| 只接近未抓取（approach_only） | 0 (0.0%) | 1 (0.4%) | 1 (0.2%) |
 
-        These include dummy agents that output zero or random agents. They are useful to ensure that the environments are configured correctly.
+**小結**
 
-        - Zero-action agent
+- 訓練物體上，Lift 87.9%、Goal 79.2%，大多數物體都能完成抓取並送到目標點。
+- 未見過的物體（與 6/30 版評估相同的 12 種）：Lift 從 45.8% 提升到 70.4%、Goal 從 18.3% 提升到 37.1%；搬運仍是主要瓶頸（transport_fail 33.3%）。
+- 杯碗類幾乎全部成功；寶特瓶與 ObjectFolder 21 的 Lift 只有 20–70%，是最難的物體。
 
-            ```bash
-            # use 'FULL_PATH_TO_isaaclab.sh|bat -p' instead of 'python' if Isaac Lab is not installed in Python venv or conda
-            python scripts/zero_agent.py --task=<TASK_NAME>
-            ```
-        - Random-action agent
+## 安裝
 
-            ```bash
-            # use 'FULL_PATH_TO_isaaclab.sh|bat -p' instead of 'python' if Isaac Lab is not installed in Python venv or conda
-            python scripts/random_agent.py --task=<TASK_NAME>
-            ```
+1. 依 [官方文件](https://isaac-sim.github.io/IsaacLab/main/source/setup/installation/index.html) 安裝 Isaac Lab。
+2. 安裝本專案的 extension：
 
-### Set up IDE (Optional)
+   ```bash
+   python -m pip install -e source/pickup_place_direct_0203
+   ```
 
-To setup the IDE, please follow these instructions:
+3. 準備資產。以下路徑寫死在設定檔中，需依自己的環境修改：
+   - JetRover USD：`jetrover.py` 中的 `usd_path`
+   - ObjectFolder 物體 USD：`pickup_place_direct_0510_env_cfg.py` 中的 `usd_path`（預設 `/root/ObjectFolder/{id}/{id}.usd`）
 
-- Run VSCode Tasks, by pressing `Ctrl+Shift+P`, selecting `Tasks: Run Task` and running the `setup_python_env` in the drop down menu.
-  When running this task, you will be prompted to add the absolute path to your Isaac Sim installation.
-
-If everything executes correctly, it should create a file .python.env in the `.vscode` directory.
-The file contains the python paths to all the extensions provided by Isaac Sim and Omniverse.
-This helps in indexing all the python modules for intelligent suggestions while writing code.
-
-### Setup as Omniverse Extension (Optional)
-
-We provide an example UI extension that will load upon enabling your extension defined in `source/pickup_place_direct_0203/pickup_place_direct_0203/ui_extension_example.py`.
-
-To enable your extension, follow these steps:
-
-1. **Add the search path of this project/repository** to the extension manager:
-    - Navigate to the extension manager using `Window` -> `Extensions`.
-    - Click on the **Hamburger Icon**, then go to `Settings`.
-    - In the `Extension Search Paths`, enter the absolute path to the `source` directory of this project/repository.
-    - If not already present, in the `Extension Search Paths`, enter the path that leads to Isaac Lab's extension directory directory (`IsaacLab/source`)
-    - Click on the **Hamburger Icon**, then click `Refresh`.
-
-2. **Search and enable your extension**:
-    - Find your extension under the `Third Party` category.
-    - Toggle it to enable your extension.
-
-## Code formatting
-
-We have a pre-commit template to automatically format your code.
-To install pre-commit:
+## 使用方式
 
 ```bash
-pip install pre-commit
+# 列出已註冊的環境
+python scripts/list_envs.py
+
+# 訓練
+python scripts/rsl_rl/train_0510.py --task Template-Pickup-Place-Direct-0510-v0 --num_envs 256 --headless
+
+# 從 checkpoint 繼續訓練
+python scripts/rsl_rl/train_0510.py --task Template-Pickup-Place-Direct-0510-v0 --headless --resume --load_run <run_dir>
+
+# 推論 / 錄影
+python scripts/rsl_rl/play_0510.py --task Template-Pickup-Place-Direct-0510-v0 --num_envs 1 --load_run <run_dir> --video
 ```
 
-Then you can run pre-commit with:
-
-```bash
-pre-commit run --all-files
-```
-
-## Troubleshooting
-
-### Pylance Missing Indexing of Extensions
-
-In some VsCode versions, the indexing of part of the extensions is missing.
-In this case, add the path to your extension in `.vscode/settings.json` under the key `"python.analysis.extraPaths"`.
-
-```json
-{
-    "python.analysis.extraPaths": [
-        "<path-to-ext-repo>/source/pickup_place_direct_0203"
-    ]
-}
-```
-
-### Pylance Crash
-
-If you encounter a crash in `pylance`, it is probable that too many files are indexed and you run out of memory.
-A possible solution is to exclude some of omniverse packages that are not used in your project.
-To do so, modify `.vscode/settings.json` and comment out packages under the key `"python.analysis.extraPaths"`
-Some examples of packages that can likely be excluded are:
-
-```json
-"<path-to-isaac-sim>/extscache/omni.anim.*"         // Animation packages
-"<path-to-isaac-sim>/extscache/omni.kit.*"          // Kit UI tools
-"<path-to-isaac-sim>/extscache/omni.graph.*"        // Graph UI tools
-"<path-to-isaac-sim>/extscache/omni.services.*"     // Services tools
-...
-```
+若 Isaac Lab 未裝在 venv / conda 中，請將 `python` 換成 `<IsaacLab>/isaaclab.sh -p`。訓練紀錄輸出至 `logs/rsl_rl/pickup_place_direct_0510/`。
